@@ -371,7 +371,16 @@ class MTBDDTransitionFn():
         return _nfa_from_pynfa(result_pynfa, dfa.alphabet, AutomatonType.DFA)
 
     @staticmethod
-    def construct_dfa_for_atom_conjunction(conjunction: List[AST_Atom], quantified_vars: List[Var], alphabet: LSBF_Alphabet) -> MTBDD_NFA:
+    def construct_dfa_for_atom_conjunction(conjunction: List[AST_Atom], quantified_vars: List[Var], alphabet: LSBF_Alphabet,
+                                           stop_after_first_accepting_macrostate: bool = False) -> MTBDD_NFA:
+        """
+        Construct the automaton for `exists quantified_vars. AND(conjunction)` with the lazy construction.
+
+        With `stop_after_first_accepting_macrostate`, the construction stops once it reaches an accepting
+        macrostate. The result then accepts a nonempty subset of the solutions, is incomplete and is not
+        determinized; it is suitable only for reading a model or testing emptiness. If the conjunction
+        has no solution, the result is the same as without the flag.
+        """
         atom_type_map = {
             '=': libamaya.Atom_Type.EQ,
             '<=': libamaya.Atom_Type.INEQ,
@@ -413,7 +422,11 @@ class MTBDDTransitionFn():
         logger.info('Lazy constructing automaton for conjunction: %s', linear_atoms + congruences)
         logger.info('Variables to IDs: %s', var_id_to_local_track)
 
-        pynfa = libamaya.construct_dfa_for_atom_conjunction(atoms, initial_state, solver_var_ids, quantified_local_tracks)
+        pynfa = libamaya.construct_dfa_for_atom_conjunction(atoms, initial_state, solver_var_ids, quantified_local_tracks,
+                                                            stop_after_first_accepting_macrostate)
+        if stop_after_first_accepting_macrostate and pynfa.final_states:
+            # Partial and, with quantified variables, not determinized.
+            return _nfa_from_pynfa(pynfa, alphabet, AutomatonType.NFA)
         return _nfa_from_pynfa(pynfa, alphabet, AutomatonType.DFA)
 
     @staticmethod

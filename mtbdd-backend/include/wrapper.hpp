@@ -52,7 +52,10 @@ NFA construct_nfa_from_congruence_with_bounded_var(Serialized_Atom* congruence, 
                                                   sylvan::BDDSET vars, u64 var_count);
 NFA construct_nfa_from_ineq(Serialized_Atom* ineq, s64 init_state, sylvan::BDDSET vars, u64 var_count);
 NFA construct_nfa_from_eq(Serialized_Atom* eq, s64 init_state, sylvan::BDDSET vars, u64 var_count);
-NFA construct_dfa_for_atom_conjunction(Serialized_Quantified_Atom_Conjunction* raw_formula);
+/**
+ * See `build_nfa_with_formula_entailement` for `stop_after_first_accepting_macrostate`.
+ */
+NFA construct_dfa_for_atom_conjunction(Serialized_Quantified_Atom_Conjunction* raw_formula, bool stop_after_first_accepting_macrostate);
 NFA perform_pad_closure_using_bit_sets(NFA& nfa);
 
 void amaya_enable_bit_sets();

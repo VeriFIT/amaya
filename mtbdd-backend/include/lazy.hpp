@@ -764,7 +764,17 @@ struct std::hash<Finalized_Macrostate> {
 
 char convert_cube_bit_to_char(u8 cube_bit);
 void show_transitions_from_state(std::stringstream& output, const NFA& nfa, State origin, sylvan::MTBDD mtbdd);
-NFA build_nfa_with_formula_entailement(const Quantified_Atom_Conjunction* formula, Conjunction_State& init_state, sylvan::BDDSET bdd_vars, Formula_Pool& formula_pool);
+/**
+ * Construct the automaton for a quantified conjunction of atoms by exploring its macrostates.
+ *
+ * With `stop_after_first_accepting_macrostate`, the exploration stops as soon as a transition into an
+ * accepting macrostate is added. The returned automaton then contains only the macrostates explored so
+ * far, is not complete, and is neither pad-closed nor determinized; its language is nonempty and every
+ * word it accepts is a solution, but it does not accept every solution. If no accepting macrostate is
+ * reachable, the construction runs to completion and the result is the same as without the flag.
+ */
+NFA build_nfa_with_formula_entailement(const Quantified_Atom_Conjunction* formula, Conjunction_State& init_state, sylvan::BDDSET bdd_vars, Formula_Pool& formula_pool,
+                                       bool stop_after_first_accepting_macrostate = false);
 void init_mtbdd_libs();
 
 struct Lazy_Construction_State {
@@ -777,6 +787,14 @@ struct Lazy_Construction_State {
     State trap_state_handle;
     bool  is_top_state_needed;
     State topstate_handle;
+
+    /**
+     * Stop the exploration once a transition into an accepting macrostate has been added.
+     * See `build_nfa_with_formula_entailement`.
+     */
+    bool  stop_after_first_accepting_macrostate;
+    bool  was_accepting_macrostate_reached;
+    State first_reached_accepting_macrostate_handle;
 };
 
 

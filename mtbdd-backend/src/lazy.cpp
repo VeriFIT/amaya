@@ -1048,6 +1048,14 @@ void explore_macrostate(NFA& constructed_nfa,
         }
 
         constructed_nfa.add_transition(macrostate.handle, finalized_post.handle, transition_symbol, alphabet_iter.quantified_bits_mask);
+
+        // `is_accepting` is part of a macrostate's identity (Finalized_Macrostate::operator==), so an
+        // accepting post that already existed was inserted - and reported - earlier.
+        if (post.is_accepting && constr_state.stop_after_first_accepting_macrostate) {
+            constr_state.was_accepting_macrostate_reached = true;
+            constr_state.first_reached_accepting_macrostate_handle = finalized_post.handle;
+            return;
+        }
     }
 }
 
@@ -1315,11 +1323,14 @@ Formula_Structure describe_formula(const Dep_Graph* graph) {
 }
 
 
-NFA build_nfa_with_formula_entailement(const Formula* formula, Conjunction_State& init_state, sylvan::BDDSET bdd_vars, Formula_Pool& formula_pool) {
+NFA build_nfa_with_formula_entailement(const Formula* formula, Conjunction_State& init_state, sylvan::BDDSET bdd_vars, Formula_Pool& formula_pool,
+                                       bool stop_after_first_accepting_macrostate) {
     Interrupt_Guard interrupt_guard;
 
     vector<Finalized_Macrostate> work_queue;
     Lazy_Construction_State constr_state = {.formula_pool = formula_pool, .output_queue = work_queue};
+    constr_state.stop_after_first_accepting_macrostate = stop_after_first_accepting_macrostate;
+    constr_state.was_accepting_macrostate_reached = false;
 
     // Prepare a trapstate in case it is needed
     {
@@ -1423,6 +1434,18 @@ NFA build_nfa_with_formula_entailement(const Formula* formula, Conjunction_State
 
         explore_macrostate(nfa, macrostate, alphabet_iter, constr_state);
 
+        if (constr_state.was_accepting_macrostate_reached) {
+            // Transitions lead into the queued macrostates, so they are kept as states (without outgoing
+            // transitions). None of them is accepting: the first accepting one stops the exploration.
+            for (auto& queued_macrostate: work_queue) {
+                nfa.states.insert(queued_macrostate.handle);
+            }
+            nfa.states.insert(constr_state.first_reached_accepting_macrostate_handle);
+            nfa.final_states.insert(constr_state.first_reached_accepting_macrostate_handle);
+            PRINTF_DEBUG("Stopped after reaching an accepting macrostate; %lu macrostates were explored\n", processed + 1);
+            break;
+        }
+
         processed       += 1;
         processed_batch += 1;
         if (processed_batch >= 2000) {
@@ -1450,6 +1473,12 @@ NFA build_nfa_with_formula_entailement(const Formula* formula, Conjunction_State
     for (auto& [macrostate, handle]: constr_state.known_macrostates) {
         PRINT_DEBUG(handle << "::" << macrostate);
         PRINT_DEBUG(handle << "::" << macrostate);
+    }
+
+    if (constr_state.was_accepting_macrostate_reached) {
+        // Pad closure only adds final states, so a path to a final state exists before it iff it exists
+        // after it; the partial automaton is returned as it is.
+        return nfa;
     }
 
     if (!formula->bound_vars.empty()) {

@@ -123,7 +123,7 @@ void shutdown_machinery()
     delete g_solver_context;
 }
 
-NFA construct_dfa_for_atom_conjunction(Serialized_Quantified_Atom_Conjunction* raw_formula) {
+NFA construct_dfa_for_atom_conjunction(Serialized_Quantified_Atom_Conjunction* raw_formula, bool stop_after_first_accepting_macrostate) {
     Interrupt_Guard interrupt_guard;
 
     if (raw_formula->var_cnt >= 64) {
@@ -203,7 +203,8 @@ NFA construct_dfa_for_atom_conjunction(Serialized_Quantified_Atom_Conjunction* r
     auto stored_formula_ptr = pool.store_formula(formula);
 
     Conjunction_State initial_state(initial_state_data);
-    auto created_nfa = build_nfa_with_formula_entailement(stored_formula_ptr, initial_state, var_set, pool);
+    auto created_nfa = build_nfa_with_formula_entailement(stored_formula_ptr, initial_state, var_set, pool,
+                                                          stop_after_first_accepting_macrostate);
 
     return created_nfa;
 }

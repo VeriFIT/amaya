@@ -81,7 +81,7 @@ cdef extern from "wrapper.hpp":
     NFA c_construct_nfa_from_congruence_with_bounded_var "construct_nfa_from_congruence_with_bounded_var"(Serialized_Atom* congruence, s64 rhs, u64 bound_var_idx, s64 lower_bound, s64 upper_bound, BDDSET vars, u64 var_count) except +
     NFA c_construct_nfa_from_ineq "construct_nfa_from_ineq"(Serialized_Atom* ineq, s64 init_state, BDDSET vars, u64 var_count) except +
     NFA c_construct_nfa_from_eq "construct_nfa_from_eq"(Serialized_Atom* eq, s64 init_state, BDDSET vars, u64 var_count) except +
-    NFA c_construct_dfa_for_atom_conjunction "construct_dfa_for_atom_conjunction"(Serialized_Quantified_Atom_Conjunction* raw_formula) except +
+    NFA c_construct_dfa_for_atom_conjunction "construct_dfa_for_atom_conjunction"(Serialized_Quantified_Atom_Conjunction* raw_formula, bint stop_after_first_accepting_macrostate) except +
     NFA c_perform_pad_closure_using_bit_sets "perform_pad_closure_using_bit_sets"(NFA& nfa) except +
     void c_amaya_enable_bit_sets "amaya_enable_bit_sets"()
 
@@ -493,12 +493,16 @@ def construct_nfa_from_congruence_with_bounded_var(coefs, s64 modulus, s64 rhs, 
     return result
 
 
-def construct_dfa_for_atom_conjunction(atoms, initial_state, vars, quantified_vars):
+def construct_dfa_for_atom_conjunction(atoms, initial_state, vars, quantified_vars,
+                                       stop_after_first_accepting_macrostate=False):
     """
     :param atoms: list of (atom_type: int (Atom_Type.*), coefs: list[int] of length len(vars), modulus: int)
     :param initial_state: list[int], one entry per atom
     :param vars: list[int] - the (solver-level) variable ids used by this conjunction, in track order
     :param quantified_vars: list[int] - local track indices (into `vars`) that are existentially quantified
+    :param stop_after_first_accepting_macrostate: stop the construction once an accepting macrostate is
+        reached. The result then accepts some, not all, solutions - see `build_nfa_with_formula_entailement`
+        in mtbdd-backend/include/lazy.hpp.
     """
     cdef u64 atom_cnt = len(atoms)
     cdef u64 var_cnt = len(vars)
@@ -537,7 +541,7 @@ def construct_dfa_for_atom_conjunction(atoms, initial_state, vars, quantified_va
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_dfa_for_atom_conjunction(&conjunction))
+        result._c_nfa = new NFA(c_construct_dfa_for_atom_conjunction(&conjunction, stop_after_first_accepting_macrostate))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
