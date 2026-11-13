@@ -1,7 +1,8 @@
 """
 Tests for the lazy construction stopped at the first accepting macrostate
 (`MTBDDTransitionFn.construct_dfa_for_atom_conjunction(..., stop_after_first_accepting_macrostate=True)`,
-`mtbdd-backend/src/lazy.cpp:build_nfa_with_formula_entailement`).
+`mtbdd-backend/src/lazy.cpp:build_nfa_with_formula_entailement`) and for the solver paths that use it
+under `SolverConfig.decide_atom_conjunctions_by_early_stopping_lazy_construction`.
 """
 import copy
 import logging
@@ -12,6 +13,7 @@ from amaya import logger as amaya_logger
 from amaya import parse
 from amaya.alphabet import LSBF_Alphabet
 from amaya.config import BackendType, SolutionDomain, solver_config
+from amaya.dpllt_automata import perform_whole_evaluation_on_source_text_with_dpllt_automata
 from amaya.mtbdd_transitions import MTBDDTransitionFn
 from amaya.relations_structures import Congruence, Relation, Var
 
@@ -24,6 +26,7 @@ def mtbdd_solver_config():
     saved_backend = solver_config.backend_type
     saved_domain = solver_config.solution_domain
     saved_dpllt = copy.deepcopy(solver_config.dpllt_automata)
+    saved_flag = solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction
     saved_log_level = amaya_logger.level
 
     solver_config.backend_type = BackendType.MTBDD
@@ -35,6 +38,7 @@ def mtbdd_solver_config():
     solver_config.backend_type = saved_backend
     solver_config.solution_domain = saved_domain
     solver_config.dpllt_automata = saved_dpllt
+    solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction = saved_flag
     amaya_logger.setLevel(saved_log_level)
 
 
@@ -111,3 +115,92 @@ def test_model_of_free_variables_with_a_quantified_variable(mtbdd_solver_config)
     assert binary_model is not None
     x_value = parse.convert_binary_model_into_decadic(binary_model, tuple(nfa.used_variables), (X,))[X]
     assert x_value in {7, 10, 13, 16}
+
+
+def test_matcher_accepts_conjunctions_of_atoms_under_quantifiers():
+    from amaya import dsl
+
+    atoms = (_le([(1, X)], 5), _le([(1, X), (-1, Y)], 0))
+    formula = dsl._exists((Y,), dsl._and(*atoms))
+
+    conjunction = parse.match_quantified_atom_conjunction(formula)
+
+    assert conjunction is not None
+    assert conjunction.atoms == atoms
+    assert conjunction.bound_vars == (Y,)
+
+
+def test_matcher_rejects_a_conjunction_with_a_disjunction():
+    from amaya import dsl
+
+    formula = dsl._and(_le([(1, X)], 5), dsl._or(_le([(1, Y)], 0), _le([(-1, Y)], -3)))
+
+    assert parse.match_quantified_atom_conjunction(formula) is None
+
+
+CONJUNCTION_SOURCES = [
+    ("""
+(declare-fun x () Int)
+(declare-fun y () Int)
+(assert (and (<= 3 x) (<= x 5) (= (mod (+ x y) 4) 1) (<= (+ x y) 9)))
+(check-sat)
+""", True),
+    ("""
+(declare-fun x () Int)
+(assert (exists ((y Int)) (and (= x (+ (* 3 y) 1)) (<= 0 y) (<= y 5) (<= 7 x))))
+(check-sat)
+""", True),
+    ("""
+(declare-fun x () Int)
+(assert (and (<= 4 x) (<= x 4) (= (mod x 2) 1)))
+(check-sat)
+""", False),
+]
+
+
+def _is_sat(source_text: str) -> bool:
+    result = parse.perform_whole_evaluation_on_source_text(source_text)
+    return result is not None and result.model is not None
+
+
+@pytest.mark.parametrize('source_text, is_satisfiable', CONJUNCTION_SOURCES)
+def test_whole_formula_verdict_does_not_depend_on_the_flag(source_text, is_satisfiable, mtbdd_solver_config):
+    verdicts = []
+    for flag_value in (False, True):
+        solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction = flag_value
+        verdicts.append(_is_sat(source_text))
+
+    assert verdicts == [is_satisfiable, is_satisfiable]
+
+
+DPLLT_SOURCES = [
+    # phi is a conjunction of atoms; chi has a disjunction, so DPLL(T) enumerates implicants.
+    ("""
+(declare-fun x () Int)
+(declare-fun y () Int)
+(assert (<= 0 x))
+(assert (<= x 10))
+(assert (or (exists ((z Int)) (and (= x (* 4 z)) (<= 3 z)))
+            (exists ((w Int)) (and (= y (+ x w)) (<= w 2) (<= 2 w) (= (mod y 3) 0)))))
+(check-sat)
+""", True),
+    ("""
+(declare-fun x () Int)
+(assert (<= 0 x))
+(assert (<= x 3))
+(assert (or (exists ((z Int)) (and (= x (* 4 z)) (<= 1 z)))
+            (exists ((w Int)) (and (= x (+ w 7)) (<= 0 w)))))
+(check-sat)
+""", False),
+]
+
+
+@pytest.mark.parametrize('source_text, is_satisfiable', DPLLT_SOURCES)
+def test_dpllt_verdict_does_not_depend_on_the_flag(source_text, is_satisfiable, mtbdd_solver_config):
+    verdicts = []
+    for flag_value in (False, True):
+        solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction = flag_value
+        result = perform_whole_evaluation_on_source_text_with_dpllt_automata(source_text)
+        verdicts.append(result is not None and result.model is not None)
+
+    assert verdicts == [is_satisfiable, is_satisfiable]

@@ -377,11 +377,19 @@ def evaluate_prepared_formula_with_automata(astp: ASTp_Node, eval_ctx: Evaluatio
     # Only a model is read off the automaton, so the evaluation of a root disjunction may stop at the
     # first disjunct with a nonempty language. `solutions_nfa` below is then the automaton of the
     # disjuncts evaluated so far, not of the whole formula.
-    eval_ctx.return_after_first_nonempty_disjunct_of_root_disjunction = True
-    try:
-        nfa = run_evaluation_procedure(astp, eval_ctx)
-    finally:
-        eval_ctx.return_after_first_nonempty_disjunct_of_root_disjunction = False
+    nfa: Optional[NFA] = None
+    if solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction:
+        # Also reads only a model, so `solutions_nfa` may be the partial automaton this produces.
+        atom_conjunction = match_quantified_atom_conjunction(astp)
+        if atom_conjunction is not None:
+            nfa = try_decide_atom_conjunction_with_early_stop(atom_conjunction, eval_ctx)
+
+    if nfa is None:
+        eval_ctx.return_after_first_nonempty_disjunct_of_root_disjunction = True
+        try:
+            nfa = run_evaluation_procedure(astp, eval_ctx)
+        finally:
+            eval_ctx.return_after_first_nonempty_disjunct_of_root_disjunction = False
     binary_model = nfa.find_model()
     if binary_model:
         formula_params = tuple(var for var, var_info in var_table.items() if var_info.is_formula_param)
@@ -1015,6 +1023,86 @@ def evaluate_not_expr(not_expr: AST_Negation, ctx: EvaluationContext, _depth: in
 
     emit_evaluation_progress_info(f' >> complement(operand) - (result size: {len(operand.states)})', _depth)
     return operand
+
+
+@dataclass
+class Quantified_Atom_Conjunction:
+    """ `exists bound_vars. AND(atoms)`; `bound_vars` is empty for a quantifier-free conjunction. """
+    atoms: Tuple[AST_Atom, ...]
+    bound_vars: Tuple[Var, ...]
+
+
+def match_quantified_atom_conjunction(node: ASTp_Node) -> Optional[Quantified_Atom_Conjunction]:
+    """
+    Match an atom, a conjunction of atoms, or a chain of existential quantifiers over one of those.
+    Returns None for any other shape.
+    """
+    match node:
+        case Relation() | Congruence():
+            return Quantified_Atom_Conjunction(atoms=(node,), bound_vars=())
+
+        case AST_Connective() if node.type == Connective_Type.AND:
+            if not all(isinstance(child, (Relation, Congruence)) for child in node.children):
+                return None
+            return Quantified_Atom_Conjunction(atoms=cast(Tuple[AST_Atom, ...], tuple(node.children)), bound_vars=())
+
+        case AST_Quantifier():
+            inner_conjunction = match_quantified_atom_conjunction(node.child)
+            if inner_conjunction is None:
+                return None
+            bound_vars = tuple(sorted(set(node.bound_vars) | set(inner_conjunction.bound_vars)))
+            return Quantified_Atom_Conjunction(atoms=inner_conjunction.atoms, bound_vars=bound_vars)
+
+    return None
+
+
+def try_decide_atom_conjunction_with_early_stop(conjunction: Quantified_Atom_Conjunction,
+                                                ctx: EvaluationContext) -> Optional[NFA]:
+    """
+    Build the automaton for `conjunction` with the lazy construction, stopped at the first accepting
+    macrostate (`MTBDDTransitionFn.construct_dfa_for_atom_conjunction`).
+
+    If the conjunction is satisfiable, the result accepts a nonempty subset of its solutions; it is
+    incomplete and is not determinized, so it may only be tested for emptiness or have a model read off
+    it. If the conjunction is unsatisfiable, the result has an empty language.
+
+    Returns None when the construction does not apply: a backend other than MTBDD, the natural numbers
+    as the solution domain, or more variables than `LAZY_EVALUATION_MAX_VARS`.
+    """
+    if solver_config.backend_type != BackendType.MTBDD:
+        return None
+    if solver_config.solution_domain != SolutionDomain.INTEGERS:
+        return None
+
+    conjunction_vars = set(var for atom in conjunction.atoms for var in atom.vars)
+    if len(conjunction_vars) > LAZY_EVALUATION_MAX_VARS:
+        return None  # See `select_children_to_lazily_evaluate`
+
+    atoms_divided_by_gcd: List[AST_Atom] = []
+    for atom in conjunction.atoms:
+        if isinstance(atom, Relation):
+            atom_divided_by_gcd = divide_relation_by_gcd(atom)
+            if isinstance(atom_divided_by_gcd, BoolLiteral):
+                if not atom_divided_by_gcd.value:
+                    return ctx.get_automaton_class_for_current_backend().trivial_nonaccepting(ctx.get_alphabet())
+                continue
+            atoms_divided_by_gcd.append(atom_divided_by_gcd)
+        else:
+            atoms_divided_by_gcd.append(atom)
+
+    if not atoms_divided_by_gcd:
+        return ctx.get_automaton_class_for_current_backend().trivial_accepting(ctx.get_alphabet())
+
+    logger.info('Deciding the conjunction with the early-stopping lazy construction: %s', atoms_divided_by_gcd)
+    from amaya.mtbdd_transitions import MTBDDTransitionFn
+    ctx.stats_operation_starts(ParsingOperation.LAZY_CONSTRUCT, None, None)
+    nfa = MTBDDTransitionFn.construct_dfa_for_atom_conjunction(atoms_divided_by_gcd, list(conjunction.bound_vars),
+                                                              ctx.get_alphabet(),
+                                                              stop_after_first_accepting_macrostate=True)
+    ctx.stats_operation_ends(operand1=None, operand2=None, output=nfa)
+    logger.info('Early-stopping lazy construction explored %d states, %d of them final.',
+                len(nfa.states), len(nfa.final_states))
+    return nfa
 
 
 def try_lazy_construct_conjunction(exists_node: AST_Quantifier, ctx: EvaluationContext) -> Optional[NFA]:

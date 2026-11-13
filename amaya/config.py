@@ -396,5 +396,17 @@ class SolverConfig(object):
     max_allowed_states: int | None = None
     """Terminate the evaluation if any intermediate automaton gets larger than the given limit."""
 
+    decide_atom_conjunctions_by_early_stopping_lazy_construction: bool = False
+    """
+    (EXPERIMENTAL, disabled by default) Decide a conjunction of atoms with the lazy construction stopped
+    at the first accepting macrostate (`amaya.parse.try_decide_atom_conjunction_with_early_stop`).
+
+    Applied to the whole formula when it is an atom, a conjunction of atoms, or an existential quantifier
+    over one (`amaya.parse.evaluate_prepared_formula_with_automata`), and to a DPLL(T) iteration when the
+    general part and the assertion are both of that shape (`amaya.dpllt_automata`). Requires the MTBDD
+    backend. On a satisfiable input the automaton produced accepts some, not all, solutions, so
+    `Evaluation_Result.solutions_nfa` is then a partial automaton.
+    """
+
 
 solver_config = SolverConfig()

@@ -48,7 +48,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from enum import IntEnum
 import sys
-from typing import Dict, FrozenSet, Hashable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, Hashable, List, Optional, Sequence, Set, Tuple, cast
 
 import pysat.formula
 import pysat.solvers
@@ -1730,6 +1730,7 @@ class Dpllt_Run_Statistics:
     prefix_cache_misses: int = 0
     prefix_cache_evictions: int = 0
     longest_prefix_hit_length: int = 0
+    iterations_decided_by_early_stopping_lazy_construction: int = 0
 
     def absorb_builder_counters(self, builder: Assertion_Automaton_Builder):
         self.prefix_cache_hits = builder.prefix_cache_hits
@@ -1830,21 +1831,50 @@ def solve_with_dpllt_over_automata(root: ASTp_Node,
             logger.debug('DPLL(T): positive-existential conjunct %d of %d:\n%s',
                          conjunct_index + 1, len(chi_conjuncts), format_formula(chi_conjunct))
 
-        nfa_for_phi = _build_automaton_for_phi(split.phi_conjuncts, ctx)
-        statistics.phi_automaton_states = len(nfa_for_phi.states)
+        general_part = General_Part(split.phi_conjuncts, ctx, statistics)
+        may_skip_automaton_for_phi = (solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction
+                                      and general_part.atoms is not None)
+        if not may_skip_automaton_for_phi:
+            general_part.get_automaton()
 
         builder = Assertion_Automaton_Builder(max_prefix_cache_entries=config.prefix_cache_max_entries)
 
         try:
             if abstraction.atom_count == 0:
-                return _solve_with_constant_abstraction(abstraction, nfa_for_phi, ctx, statistics)
+                return _solve_with_constant_abstraction(abstraction, general_part, ctx, statistics)
 
-            return _enumerate_implicants(abstraction, chi_bound_vars, nfa_for_phi, builder, ctx, config,
+            return _enumerate_implicants(abstraction, chi_bound_vars, general_part, builder, ctx, config,
                                          statistics)
         finally:
             statistics.absorb_builder_counters(builder)
             if config.report:
                 _report_statistics(statistics)
+
+
+class General_Part:
+    """
+    The general part `phi`: its conjuncts, and its automaton, built on first use.
+
+    `atoms` holds the conjuncts when every one of them is an atom (also when there is none), and is None
+    otherwise. An iteration then hands `phi AND assertion` to the early-stopping lazy construction
+    (`_try_decide_iteration_by_early_stopping_lazy_construction`), which does not need the automaton.
+    """
+
+    def __init__(self, phi_conjuncts: Tuple[ASTp_Node, ...], ctx: EvaluationContext,
+                 statistics: Dpllt_Run_Statistics):
+        self.phi_conjuncts = phi_conjuncts
+        self.atoms: Optional[Tuple[Relation | Congruence, ...]] = None
+        if all(isinstance(conjunct, (Relation, Congruence)) for conjunct in phi_conjuncts):
+            self.atoms = cast(Tuple[Relation | Congruence, ...], phi_conjuncts)
+        self._ctx = ctx
+        self._statistics = statistics
+        self._automaton: Optional[NFA] = None
+
+    def get_automaton(self) -> NFA:
+        if self._automaton is None:
+            self._automaton = _build_automaton_for_phi(self.phi_conjuncts, self._ctx)
+            self._statistics.phi_automaton_states = len(self._automaton.states)
+        return self._automaton
 
 
 def _build_automaton_for_phi(phi_conjuncts: Tuple[ASTp_Node, ...], ctx: EvaluationContext) -> NFA:
@@ -1861,7 +1891,7 @@ def _build_automaton_for_phi(phi_conjuncts: Tuple[ASTp_Node, ...], ctx: Evaluati
 
 
 def _solve_with_constant_abstraction(abstraction: Monotone_Literal_Abstraction,
-                                     nfa_for_phi: NFA,
+                                     general_part: General_Part,
                                      ctx: EvaluationContext,
                                      statistics: Dpllt_Run_Statistics) -> Evaluation_Result:
     """
@@ -1873,6 +1903,7 @@ def _solve_with_constant_abstraction(abstraction: Monotone_Literal_Abstraction,
         return _make_unsat_evaluation_result(ctx)
 
     statistics.iteration_count = 1
+    nfa_for_phi = general_part.get_automaton()
     binary_model = nfa_for_phi.find_model()
     if binary_model is None:
         return _make_unsat_evaluation_result(ctx)
@@ -1881,7 +1912,7 @@ def _solve_with_constant_abstraction(abstraction: Monotone_Literal_Abstraction,
 
 def _enumerate_implicants(abstraction: Monotone_Literal_Abstraction,
                           chi_bound_vars: FrozenSet[Var],
-                          nfa_for_phi: NFA,
+                          general_part: General_Part,
                           builder: Assertion_Automaton_Builder,
                           ctx: EvaluationContext,
                           config: DpllTAutomataConfig,
@@ -1920,7 +1951,7 @@ def _enumerate_implicants(abstraction: Monotone_Literal_Abstraction,
 
                 statistics.theory_calls += 1
                 model_of_iteration = _decide_asserted_literals(abstraction, asserted_atom_ids,
-                                                               chi_bound_vars, nfa_for_phi, builder, ctx,
+                                                               chi_bound_vars, general_part, builder, ctx,
                                                                config, statistics)
                 if model_of_iteration is not None:
                     return model_of_iteration
@@ -1944,7 +1975,7 @@ def _enumerate_implicants(abstraction: Monotone_Literal_Abstraction,
 def _decide_asserted_literals(abstraction: Monotone_Literal_Abstraction,
                               asserted_atom_ids: Set[int],
                               chi_bound_vars: FrozenSet[Var],
-                              nfa_for_phi: NFA,
+                              general_part: General_Part,
                               builder: Assertion_Automaton_Builder,
                               ctx: EvaluationContext,
                               config: DpllTAutomataConfig,
@@ -1973,11 +2004,17 @@ def _decide_asserted_literals(abstraction: Monotone_Literal_Abstraction,
     if getattr(ctx, 'enc_table', None) is not None:
         ctx.enc_table = {}
 
+    if solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction:
+        was_decided, model_of_iteration = _try_decide_iteration_by_early_stopping_lazy_construction(
+            general_part, assertion, ctx, statistics)
+        if was_decided:
+            return model_of_iteration
+
     nfa_for_assertion = builder.build_automaton_for_assertion(assertion, ctx)
     statistics.max_assertion_automaton_states = max(statistics.max_assertion_automaton_states,
                                                     len(nfa_for_assertion.states))
 
-    nfa = intersect_automata(nfa_for_phi, nfa_for_assertion, ctx)
+    nfa = intersect_automata(general_part.get_automaton(), nfa_for_assertion, ctx)
     statistics.max_intersection_states = max(statistics.max_intersection_states, len(nfa.states))
 
     binary_model = nfa.find_model()
@@ -1985,6 +2022,42 @@ def _decide_asserted_literals(abstraction: Monotone_Literal_Abstraction,
         return None
 
     return _make_sat_evaluation_result(ctx, nfa, binary_model)
+
+
+def _try_decide_iteration_by_early_stopping_lazy_construction(
+        general_part: General_Part,
+        assertion: ASTp_Node,
+        ctx: EvaluationContext,
+        statistics: Dpllt_Run_Statistics) -> Tuple[bool, Optional[Evaluation_Result]]:
+    """
+    Decide `phi AND assertion` with `amaya.parse.try_decide_atom_conjunction_with_early_stop` when `phi`
+    is a conjunction of atoms and the assertion is one, possibly under its quantifier.
+
+    The assertion's bound variables are renamed apart from the rest of the formula (§5.1 of
+    `docs/DPLLT_WITH_AUTOMATA.md`), so `phi` does not mention them and
+    `phi AND exists X. A` = `exists X. (phi AND A)`.
+
+    Returns `(False, None)` when the shapes do not match or the construction does not apply, and
+    `(True, result)` otherwise, where `result` is None if the conjunction is unsatisfiable.
+    """
+    if general_part.atoms is None:
+        return False, None
+
+    assertion_conjunction = parse.match_quantified_atom_conjunction(assertion)
+    if assertion_conjunction is None:
+        return False, None
+
+    conjunction = parse.Quantified_Atom_Conjunction(atoms=general_part.atoms + assertion_conjunction.atoms,
+                                                    bound_vars=assertion_conjunction.bound_vars)
+    nfa = parse.try_decide_atom_conjunction_with_early_stop(conjunction, ctx)
+    if nfa is None:
+        return False, None
+
+    statistics.iterations_decided_by_early_stopping_lazy_construction += 1
+    binary_model = nfa.find_model()
+    if binary_model is None:  # An empty model is a *satisfiable* one - not falsy-testable
+        return True, None
+    return True, _make_sat_evaluation_result(ctx, nfa, binary_model)
 
 
 def _may_invoke_assertion_optimizer(config: DpllTAutomataConfig, statistics: Dpllt_Run_Statistics) -> bool:

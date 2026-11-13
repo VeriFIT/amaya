@@ -137,6 +137,17 @@ argparser.add_argument('--astp-cse',
                              'Requires -m MTBDD; a no-op (falls back to the ordinary evaluation) on any other backend.\n'
                              'Does not change the result on any input - see DEBRUJIN_CSE.md.'))
 
+argparser.add_argument('--early-stop-lazy-construction',
+                       action='store_true',
+                       dest='early_stop_lazy_construction',
+                       default=False,
+                       help=('(EXPERIMENTAL) Decide a conjunction of atoms (optionally under an existential quantifier)\n'
+                             'with the lazy construction stopped at the first accepting state. Applied to the whole\n'
+                             'formula when it has that shape, and to every --use-dpllt-automata iteration whose\n'
+                             'general part and assertion both have it. Requires -m MTBDD and the integers as the\n'
+                             'solution domain; otherwise the ordinary evaluation is used. The automaton produced\n'
+                             'for a satisfiable input accepts some, not all, of its solutions.'))
+
 argparser.add_argument('--use-toplevel-sat',
                        action='store_true',
                        dest='use_toplevel_sat',
@@ -729,6 +740,8 @@ if args.dpllt_prefix_cache_entries is not None:
     solver_config.dpllt_automata.prefix_cache_max_entries = args.dpllt_prefix_cache_entries
 if args.dpllt_report:
     solver_config.dpllt_automata.report = True
+
+solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction = args.early_stop_lazy_construction
 
 
 def get_evaluation_strategy():
