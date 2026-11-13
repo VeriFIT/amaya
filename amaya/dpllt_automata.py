@@ -72,6 +72,7 @@ from amaya.preprocessing.conditional_equality_resolution import fill_referenced_
 from amaya.preprocessing.eval import VarInfo
 from amaya.preprocessing.pipeline import Optimization_Pipeline, Pass_Descriptor, build_registry
 from amaya.preprocessing.structural_id import Structural_Id_Table, compute_structural_id
+from amaya.preprocessing.theory_reasoning import Asserted_Model_Properties, simplify_formula_using_model_properties
 from amaya.preprocessing.unbound_vars import linearize_congruences, push_negations_towards_atoms
 from amaya.relations_structures import (
     AST_Connective,
@@ -100,6 +101,7 @@ ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES: FrozenSet[str] = frozenset({
     'var-bounds',
     'interval-analysis',
     'unit-coefficient-fm',
+    'model-reasoning',
     'flatten-connectives',
     'dedup-connective-children',
     'finalize-flatten',
@@ -117,6 +119,7 @@ Classification of the passes admitted besides `linearize` (by reading the pass; 
 | `var-bounds` | replaces the single-variable bounds of an AND by their intersection | the intersection is implied by the AND it is added to |
 | `interval-analysis` | folds atoms to True/False or tightens them using bounds asserted by ancestor ANDs | the ancestor bounds are conjuncts of the same assertion |
 | `unit-coefficient-fm` | Fourier-Motzkin elimination of a quantified variable with coefficients +1/-1 | exact over the integers; adds `v >= 0` over the naturals |
+| `model-reasoning`, as narrowed by `_restrict_descriptor_to_an_assertion` | substitutes aliases from equations; removes a quantified variable with its defining equation; folds constants; replaces a Bool variable by the value a sibling conjunct asserts; drops a congruence whose period a quantified variable's hard bounds cover | each fact used is a conjunct of the enclosing frame; the congruence rewrite is confined to quantified variables |
 | `flatten-connectives`, `dedup-connective-children` and the `finalize-*` passes | associativity and idempotence of AND/OR; refreshing `referenced_vars` | equivalence |
 
 `var-bounds` and `interval-analysis` are unsound when an inner quantifier binds a variable that is also
@@ -129,7 +132,6 @@ Passes not admitted, and the reason:
 |---|---|
 | `minimize-congruences` | unsound: drops a congruence that shares a quantified variable with another congruence of a different coefficient (`unbound_vars.py:_try_rewrite_congruence_on_unbund_vars`) |
 | `opt-bottom-exists` | unsound: `unbound_vars.py:_rewrite_surjective_transformations` copies the bound of `x1` onto `x2` unchanged |
-| `model-reasoning` | `theory_reasoning.py:_find_vars_covered_by_hard_bounds` drops a congruence over a free variable |
 | `unconstrained-vars` | treats a free variable as existentially quantified |
 | `infinite-domain` | relies on a non-zero coefficient of the dropped variable, which it does not check |
 | `inline-bool-definitions`, `rce`, `light-sat`, `iso-conflicts` | do not fire on a conjunction of literals |
@@ -1399,15 +1401,28 @@ def _restrict_descriptor_to_an_assertion(descriptor: Pass_Descriptor) -> Pass_De
     and disables it under a negation
     (`amaya.preprocessing.unbound_vars.linearize_congruences`).
 
+    `model-reasoning` drops a congruence together with the hard bounds of a variable that covers the
+    congruence's period and is used nowhere else (`theory_reasoning._find_vars_covered_by_hard_bounds`).
+    The uses are counted over the assertion, which does not see `phi`'s occurrences of a free variable.
+    `Asserted_Model_Properties.free_vars_may_be_constrained_outside_the_formula` confines that rewrite
+    to the assertion's own bound variables.
+
     Descriptors with nothing to narrow are returned unchanged.
     """
-    if descriptor.name != 'linearize':
-        return descriptor
+    if descriptor.name == 'linearize':
+        return dataclasses.replace(
+            descriptor,
+            run=lambda ast, ctx: linearize_congruences(ast, restrict_monotonicity_to_bound_vars=True),
+        )
 
-    return dataclasses.replace(
-        descriptor,
-        run=lambda ast, ctx: linearize_congruences(ast, restrict_monotonicity_to_bound_vars=True),
-    )
+    if descriptor.name == 'model-reasoning':
+        return dataclasses.replace(
+            descriptor,
+            run=lambda ast, ctx: simplify_formula_using_model_properties(
+                ast, Asserted_Model_Properties(free_vars_may_be_constrained_outside_the_formula=True)),
+        )
+
+    return descriptor
 
 
 def optimize_assertion_formula(assertion: ASTp_Node,

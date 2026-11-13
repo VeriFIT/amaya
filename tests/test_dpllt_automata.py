@@ -1091,7 +1091,7 @@ def test_T21_the_allowlist_admits_exactly_the_classified_passes():
     """
     assert set(ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES) == {
         'linearize', 'stomp-negations', 'var-bounds', 'interval-analysis', 'unit-coefficient-fm',
-        'flatten-connectives', 'dedup-connective-children',
+        'model-reasoning', 'flatten-connectives', 'dedup-connective-children',
         'finalize-flatten', 'finalize-dedup', 'finalize-refvars',
     }
     assert set(ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY) == {
@@ -1198,6 +1198,26 @@ def test_T21_the_verdict_does_not_depend_on_the_assertion_optimizer_mode(quiet_s
         _compare_verdicts_tolerating_shared_evaluator_defects(T21_SOURCE)
     finally:
         solver_config.optimizations.linearize_congruences = saved_linearize
+
+
+def test_T21_restricted_model_reasoning_keeps_a_congruence_over_a_free_variable(quiet_solver_config):
+    """
+    `0 <= x <= 1 and x = 0 (mod 2)` admits only x = 0. Over a whole formula `model-reasoning` drops the
+    congruence because nothing else uses `x`; in an assertion `phi` may require x = 1, so the congruence
+    must survive (`_restrict_descriptor_to_an_assertion`).
+    """
+    saved_reason_about_models = solver_config.optimizations.reason_about_models
+    solver_config.optimizations.reason_about_models = True
+    try:
+        assertion = dsl._and(_le([(-1, X)], 0), _le([(1, X)], 1), _congruence([(1, X)], 0, 2))
+        fill_referenced_vars(assertion)
+        ctx = _make_evaluation_context(_make_var_table((X, VariableType.INT, True)))
+
+        optimized = optimize_assertion_formula(assertion, ctx, ASSERTION_OPTIMIZER_MODE_RESTRICTED)
+
+        assert 'Congruence' in format_formula(optimized)
+    finally:
+        solver_config.optimizations.reason_about_models = saved_reason_about_models
 
 
 # --- T22: the monotonicity branch of the linearization is confined to bound variables -----------

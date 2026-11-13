@@ -501,12 +501,14 @@ assertion alone, which is a different contract:
 > over the formula parameters, not merely have the same satisfiability.
 
 Satisfiability-preserving rewriting is not sufficient here, because the result is intersected with
-`nfa_for_phi` afterwards. A concrete violation exists in the current registry:
-`amaya/preprocessing/theory_reasoning.py:_simplify_formula_using_model_properties`, in its `Var`
-case, asserts a value for a Bool variable it has not seen and simplifies the rest of the formula
-under that assumption. Applied to the whole formula that is satisfiability-preserving; applied to
-the assertion it can fix a Bool parameter that `phi` constrains the other way, which would report
-UNSAT for a satisfiable formula. `amaya/sat_toplevel.py:substitute_bool_vars` documents the same
+`nfa_for_phi` afterwards. An example from the registry:
+`amaya/preprocessing/theory_reasoning.py:_find_vars_covered_by_hard_bounds` drops a congruence
+together with the hard bounds of a variable that covers the congruence's period and occurs nowhere
+else in the formula it is handed. Applied to the whole formula that is satisfiability-preserving;
+applied to the assertion it also drops `x = 0 (mod 2)` from `0 <= x <= 1 and x = 0 (mod 2)` for a free
+`x` that `phi` fixes to 1, which would report SAT for an unsatisfiable formula. The assertion optimizer
+admits `model-reasoning` only with that rewrite confined to the assertion's own bound variables
+(`amaya/dpllt_automata.py:_restrict_descriptor_to_an_assertion`). `amaya/sat_toplevel.py:substitute_bool_vars` documents the same
 distinction from the other side.
 
 ### 7.2 The specified handling

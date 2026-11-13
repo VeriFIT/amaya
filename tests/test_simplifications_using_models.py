@@ -696,3 +696,53 @@ def test_alias_from_equation_listed_after_its_siblings_is_substituted_into_them(
     )))
 
     assert result == expected_result
+
+
+def _contains_congruence(node) -> bool:
+    match node:
+        case Congruence():
+            return True
+        case AST_Connective():
+            return any(_contains_congruence(child) for child in node.children)
+        case AST_Negation():
+            return _contains_congruence(node.child)
+        case _:
+            return hasattr(node, 'child') and _contains_congruence(node.child)
+
+
+def _congruence_whose_period_the_bounds_of_x_cover(x: Var, *, quantify_x: bool):
+    ''' (0 <= x <= 1  and  x = 0 (mod 2)), optionally under `exists x`; the congruence fixes x = 0. '''
+    conjunction = dsl._and(
+        Relation(vars=[x], coefs=[-1], rhs=0, predicate_symbol='<='),
+        Relation(vars=[x], coefs=[1], rhs=1, predicate_symbol='<='),
+        Congruence(vars=[x], coefs=[1], rhs=0, modulus=2),
+    )
+    return dsl._exists((x,), conjunction) if quantify_x else conjunction
+
+
+def test_congruence_over_free_var_covered_by_its_bounds_is_dropped_for_a_whole_formula():
+    # Over a whole formula, `x` occurring nowhere else makes it free to pick, so the congruence can go.
+    formula = _congruence_whose_period_the_bounds_of_x_cover(Var(1), quantify_x=False)
+
+    result = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert not _contains_congruence(result)
+
+
+def test_congruence_over_free_var_is_kept_when_free_vars_may_be_constrained_outside():
+    # A DPLL(T) assertion: `phi` may require x = 1, which the congruence excludes.
+    formula = _congruence_whose_period_the_bounds_of_x_cover(Var(1), quantify_x=False)
+
+    assertions = Asserted_Model_Properties(free_vars_may_be_constrained_outside_the_formula=True)
+    result = simplify_formula_using_model_properties(formula, assertions)
+
+    assert _contains_congruence(result)
+
+
+def test_congruence_over_quantified_var_is_dropped_when_free_vars_may_be_constrained_outside():
+    formula = _congruence_whose_period_the_bounds_of_x_cover(Var(1), quantify_x=True)
+
+    assertions = Asserted_Model_Properties(free_vars_may_be_constrained_outside_the_formula=True)
+    result = simplify_formula_using_model_properties(formula, assertions)
+
+    assert not _contains_congruence(result)

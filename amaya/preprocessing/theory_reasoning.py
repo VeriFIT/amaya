@@ -73,6 +73,15 @@ class Asserted_Model_Properties:
     `var_uses_total`, which counts atoms of the formula before substitution.
     """
 
+    free_vars_may_be_constrained_outside_the_formula: bool = False
+    """
+    Set when the formula handed in is a part of a larger formula that may constrain its free
+    variables, e.g. a DPLL(T) assertion intersected with `phi` (`amaya.dpllt_automata`). The use
+    counts (`var_uses_excluding_hard_bounds`, `var_uses_total`) then cover only some of the uses of a
+    free variable, so `_find_vars_covered_by_hard_bounds` considers only variables bound by a
+    quantifier inside the formula.
+    """
+
     vars_covered_by_congruence_bounds: set[Var] = field(default_factory=set)
     """
     Variables whose hard bounds were found to cover a congruence's whole period, letting that
@@ -540,6 +549,8 @@ def _find_vars_covered_by_hard_bounds(congruence: Congruence, assertions: Assert
         if assertions.var_uses_total.get(var, 0) != 1 + visible_bound_atoms:
             continue
         if assertions.find_quantifier_scope_binding_var(var) is None:
+            if assertions.free_vars_may_be_constrained_outside_the_formula:
+                continue
             if assertions.negation_depth != 0 or assertions.branch_depth != 0:
                 continue
         elif not assertions.no_branch_or_negation_crossed_since_binder_of(var):
