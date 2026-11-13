@@ -279,9 +279,12 @@ def _registry_definition() -> List[Pass_Descriptor]:
         Pass_Descriptor(
             name='miniscope', config_flag='do_miniscoping',
             run=lambda ast, ctx: miniscope_quantifiers(ast),
-            tier=Pass_Tier.HEAVY, max_runs=2, growth_factor_limit=1.5,
+            tier=Pass_Tier.HEAVY, max_runs=4, growth_factor_limit=1.5,
             consumes=frozenset({QUANTIFIER_SHAPE, NARY_SHAPE, VAR_ELIMINATED}),
             produces=frozenset({QUANTIFIER_SHAPE, NARY_SHAPE}),
+            # `antiprenexing.get_referenced_vars` reads `referenced_vars` of connectives, negations and
+            # quantifiers to decide which children a quantifier can be moved out of.
+            requires_referenced_vars=True,
         ),
         Pass_Descriptor(
             name='opt-bottom-exists', config_flag='optimize_bottom_quantifiers',
