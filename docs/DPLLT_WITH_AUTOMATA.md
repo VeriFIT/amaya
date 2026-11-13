@@ -516,7 +516,7 @@ A configuration field `dpllt_assertion_optimizer` with three values:
 | Value | Behaviour | Status |
 |---|---|---|
 | `none` | The assertion is handed to the evaluator unoptimized | Correct by construction |
-| `restricted` (default) | The pipeline runs with a registry filtered to an allowlist of passes classified as solution-set-preserving | Allowlist holds `linearize`; the remaining passes are unclassified |
+| `restricted` (default) | The pipeline runs with a registry filtered to an allowlist of passes classified as solution-set-preserving | Allowlist: `amaya/dpllt_automata.py:get_assertion_optimizer_allowlist`; the classification of every registered pass is in the docstrings of `ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES` and `ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY` |
 | `full` | The pipeline runs with the registry `build_registry(solver_config)` returns | **Known to be unsound** for at least the pass named above; provided for measurement only and gated behind an explicit flag |
 
 The allowlist is a per-pass classification. Each of the passes registered in
@@ -551,8 +551,12 @@ Two properties of that admission are recorded at the point of use:
    (`amaya/preprocessing/pipeline.py:_registry_definition`): node count is not a proxy for what a
    congruence costs, since its automaton has states on the order of its modulus.
 
-The remaining passes are unclassified, so `restricted` applies only `linearize` - and only when
-`-O linearize` has also enabled it in the registry.
+The remaining passes were classified by reading their implementations (not by execution). The
+verdicts, with the reason for every pass that is not admitted, are recorded in the docstrings of
+`amaya/dpllt_automata.py:ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES` (admitted in every
+solution domain) and `ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY`
+(admitted when the solution domain is the integers). `restricted` applies a listed pass only when the
+`-O` configuration also enables it in the registry.
 
 An alternative that avoids the classification entirely: run the pipeline on
 `phi AND Gamma(M)` — the whole per-iteration formula — instead of on the assertion. This restores
@@ -686,7 +690,7 @@ New module `amaya/dpllt_automata.py`. Symbols, as implemented:
 | `minimize_asserted_atom_ids(abstraction, asserted_atom_ids) -> Set[int]` | §6.3 |
 | `build_assertion_formula_for_atom_ids(abstraction, asserted_atom_ids, chi_bound_vars, project_bound_vars) -> ASTp_Node` | §6.4 |
 | `optimize_assertion_formula(assertion, ctx, mode) -> ASTp_Node` | §7.2 |
-| `ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES` | §7.2; empty until the pass classification exists |
+| `ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES`, `ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY`, `get_assertion_optimizer_allowlist()` | §7.2 |
 | `clone_automaton(nfa) -> Optional[NFA]` | §8.4 |
 | `intersect_automata(first, second, ctx) -> NFA` | §8.4; see the note below |
 | `Assertion_Automaton_Builder` | §8.2; holds `intersection_prefix_cache`, `structural_id_table`, hit/miss/eviction counters |

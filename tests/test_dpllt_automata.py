@@ -28,7 +28,9 @@ from amaya.config import (
     solver_config,
 )
 from amaya.dpllt_automata import (
+    ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY,
     ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES,
+    get_assertion_optimizer_allowlist,
     Assertion_Automaton_Builder,
     optimize_assertion_formula,
     Monotone_Skeleton_Node_Type,
@@ -48,7 +50,7 @@ from amaya.dpllt_automata import (
     split_formula_into_phi_and_chi,
 )
 from amaya.preprocessing.eval import VarInfo
-from amaya.preprocessing.pipeline import build_registry as _build_pipeline_registry
+from amaya.preprocessing.pipeline import _registry_definition, build_registry as _build_pipeline_registry
 from amaya.preprocessing import unbound_vars as var_bounds_lib
 from amaya.preprocessing.conditional_equality_resolution import fill_referenced_vars
 from amaya.preprocessing.unbound_vars import (
@@ -1081,13 +1083,39 @@ def test_T20_the_verdict_does_not_depend_on_the_complementary_pair_rule(quiet_so
 
 # --- T21: the assertion optimizer allowlist -----------------------------------------------------
 
-def test_T21_the_allowlist_admits_linearize_and_nothing_else_yet():
+def test_T21_the_allowlist_admits_exactly_the_classified_passes():
     """
-    Guards the allowlist against growing without the classification design section 7.2 calls for. A
+    Guards the allowlist against changing without the classification design section 7.2 calls for. A
     pass added here must have been shown to preserve the assertion's solution set over its free
     variables, not merely its satisfiability.
     """
-    assert set(ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES) == {'linearize'}
+    assert set(ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES) == {
+        'linearize', 'stomp-negations', 'var-bounds', 'interval-analysis', 'unit-coefficient-fm',
+        'flatten-connectives', 'dedup-connective-children',
+        'finalize-flatten', 'finalize-dedup', 'finalize-refvars',
+    }
+    assert set(ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY) == {
+        'gcd-rewrite', 'squeeze-elimination',
+    }
+
+
+def test_T21_integer_only_passes_are_excluded_over_the_naturals():
+    saved_domain = solver_config.solution_domain
+    try:
+        solver_config.solution_domain = SolutionDomain.INTEGERS
+        assert get_assertion_optimizer_allowlist() >= ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY
+
+        solver_config.solution_domain = SolutionDomain.NATURALS
+        assert get_assertion_optimizer_allowlist() == ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES
+    finally:
+        solver_config.solution_domain = saved_domain
+
+
+def test_T21_every_allowlisted_name_is_a_registered_pass():
+    registered_pass_names = {descriptor.name for descriptor in _registry_definition()}
+    allowlisted_names = (ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES
+                         | ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY)
+    assert allowlisted_names <= registered_pass_names
 
 
 BOUND_VAR_FOR_LINEARIZATION = Var(id=26)

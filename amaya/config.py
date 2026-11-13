@@ -259,8 +259,8 @@ class DpllTAutomataConfig:
 
     `none` hands the assertion to the evaluator unoptimized. `restricted` runs the fixpoint pipeline
     with the registry filtered to the passes classified as solution-set-preserving over free
-    variables (`amaya.dpllt_automata.ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES`, currently
-    empty, so `restricted` behaves as `none`). `full` runs the whole enabled registry and is known to
+    variables (`amaya.dpllt_automata.get_assertion_optimizer_allowlist`); a listed pass runs only if
+    `-O` also enables it. `full` runs the whole enabled registry and is known to
     be unsound - see `docs/DPLLT_WITH_AUTOMATA.md` §7.2 - it exists to measure what the pipeline
     would buy if the classification turned out favourable.
     """

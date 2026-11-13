@@ -94,17 +94,54 @@ from amaya.solver_core import EvaluationContext
 from amaya.stats import ParsingOperation
 
 
-ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES: FrozenSet[str] = frozenset({'linearize'})
+ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES: FrozenSet[str] = frozenset({
+    'linearize',
+    'stomp-negations',
+    'var-bounds',
+    'interval-analysis',
+    'unit-coefficient-fm',
+    'flatten-connectives',
+    'dedup-connective-children',
+    'finalize-flatten',
+    'finalize-dedup',
+    'finalize-refvars',
+})
 """
 Names of the passes that may be applied to a single assertion rather than to the whole formula.
+
+Classification of the passes admitted besides `linearize` (by reading the pass; not executed):
+
+| Pass | Rewrite on an assertion | Why the solution set is preserved |
+|---|---|---|
+| `stomp-negations` | `NOT (a.x <= c)` to `-a.x <= -c - 1`; De Morgan; double negation | equivalence over the integers and the naturals |
+| `var-bounds` | replaces the single-variable bounds of an AND by their intersection | the intersection is implied by the AND it is added to |
+| `interval-analysis` | folds atoms to True/False or tightens them using bounds asserted by ancestor ANDs | the ancestor bounds are conjuncts of the same assertion |
+| `unit-coefficient-fm` | Fourier-Motzkin elimination of a quantified variable with coefficients +1/-1 | exact over the integers; adds `v >= 0` over the naturals |
+| `flatten-connectives`, `dedup-connective-children` and the `finalize-*` passes | associativity and idempotence of AND/OR; refreshing `referenced_vars` | equivalence |
+
+`var-bounds` and `interval-analysis` are unsound when an inner quantifier binds a variable that is also
+used outside it. The assertion has one quantifier whose variables are renamed apart (§5.1 of the
+design document), so the case does not arise here.
+
+Passes not admitted, and the reason:
+
+| Pass | Reason |
+|---|---|
+| `minimize-congruences` | unsound: drops a congruence that shares a quantified variable with another congruence of a different coefficient (`unbound_vars.py:_try_rewrite_congruence_on_unbund_vars`) |
+| `opt-bottom-exists` | unsound: `unbound_vars.py:_rewrite_surjective_transformations` copies the bound of `x1` onto `x2` unchanged |
+| `model-reasoning` | `theory_reasoning.py:_find_vars_covered_by_hard_bounds` drops a congruence over a free variable |
+| `unconstrained-vars` | treats a free variable as existentially quantified |
+| `infinite-domain` | relies on a non-zero coefficient of the dropped variable, which it does not check |
+| `inline-bool-definitions`, `rce`, `light-sat`, `iso-conflicts` | do not fire on a conjunction of literals |
+| `miniscope` | splits `exists X. AND(...)`, the shape the lazy and bounded-congruence constructions match |
+| `modular-bounds` | adds variables to the variable table after the alphabet of the run is built |
+| `gcd-rewrite`, `squeeze-elimination` | see `ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY` |
 
 The pipeline's passes are whole-formula rewrites, and the contract they satisfy - preserving
 satisfiability of the formula they are handed - is *not* enough here: the assertion's automaton is
 afterwards intersected with the automaton for `phi`, so a pass must preserve the assertion's solution
-set over the variables it shares with `phi`, not merely its satisfiability. At least one registered
-pass violates this: `amaya.preprocessing.theory_reasoning._simplify_formula_using_model_properties`
-asserts a value for a Bool variable it has not seen and simplifies the rest under that assumption,
-which can fix a Bool parameter that `phi` constrains the other way.
+set over the variables it shares with `phi`, not merely its satisfiability. The passes listed as not
+admitted above violate this.
 
 `linearize` (`amaya.preprocessing.unbound_vars.linearize_congruences`) is admitted. It replaces a
 congruence over two variables by the disjunction of the linear equations the congruence has inside the
@@ -120,11 +157,32 @@ handed; for a free variable shared with `phi` it preserves satisfiability alone,
 computed over the assertion, which does not see `phi`'s occurrences. This is the part of the pass to
 suspect if a verdict ever moves between `none` and `restricted`.
 
-The remaining passes are unclassified. Classifying them requires deciding, for each, whether it
-preserves the solution set over free variables, preserves it only for existentially quantified
-variables, or preserves satisfiability only. See `docs/DPLLT_WITH_AUTOMATA.md` §7.2 and
-`docs/PIPELINE_UNSAT_CORES.md` §4.
+See `docs/DPLLT_WITH_AUTOMATA.md` §7.2.
 """
+
+
+ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY: FrozenSet[str] = frozenset({
+    'gcd-rewrite',
+    'squeeze-elimination',
+})
+"""
+Passes admitted on an assertion only when `solver_config.solution_domain` is `SolutionDomain.INTEGERS`.
+
+Neither pass reads the solution domain, and each eliminates a quantified variable by an argument that
+holds over the integers only:
+
+| Pass | Rewrite | Counterexample over the naturals |
+|---|---|---|
+| `gcd-rewrite` (`unbound_vars.py:simplify_unbounded_equations`) | `exists X. (sum a_i.x_i + T = r)` to `T = r (mod gcd(a_i))` | `exists x. 2x + y = 1` becomes `y = 1 (mod 2)`, true at `y = 3`, where `x = -1` |
+| `squeeze-elimination` (`inner_quantifier_squeeze_elimination.py:eliminate_inner_quantifier_squeezes`) | substitutes the unique value `y = floor((k - U)/a)` a squeeze pair forces | the substituted value is not constrained to `y >= 0` |
+"""
+
+
+def get_assertion_optimizer_allowlist() -> FrozenSet[str]:
+    """ The names of the passes `ASSERTION_OPTIMIZER_MODE_RESTRICTED` runs, for the current solution domain. """
+    if solver_config.solution_domain == SolutionDomain.INTEGERS:
+        return ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES | ASSERTION_OPTIMIZER_PASSES_PRESERVING_SOLUTION_SET_OVER_INTEGERS_ONLY
+    return ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1359,10 +1417,10 @@ def optimize_assertion_formula(assertion: ASTp_Node,
     Run the fixpoint pipeline over a single assertion, with the registry filtered according to
     `assertion_optimizer_mode`.
 
-    `ASSERTION_OPTIMIZER_MODE_RESTRICTED` filters to
-    `ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES`, which is empty, so it currently returns the
-    assertion unchanged. `ASSERTION_OPTIMIZER_MODE_FULL` runs the whole enabled registry and is known
-    to be unsound here - see `ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES`.
+    `ASSERTION_OPTIMIZER_MODE_RESTRICTED` filters to `get_assertion_optimizer_allowlist()`; a pass in
+    the allowlist runs only if the `-O` configuration also enables it. `ASSERTION_OPTIMIZER_MODE_FULL`
+    runs the whole enabled registry and is known to be unsound here - see
+    `ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES`.
 
     Note this ignores `solver_config.optimization_pipeline.enabled`: the legacy hand-unrolled sequence
     (`amaya.parse._optimize_formula_structure_legacy`) is not factored to accept a registry, so there
@@ -1376,8 +1434,9 @@ def optimize_assertion_formula(assertion: ASTp_Node,
 
     registry = build_registry(solver_config)
     if assertion_optimizer_mode == ASSERTION_OPTIMIZER_MODE_RESTRICTED:
+        allowlist = get_assertion_optimizer_allowlist()
         registry = [_restrict_descriptor_to_an_assertion(descriptor) for descriptor in registry
-                    if descriptor.name in ASSERTION_OPTIMIZER_SOLUTION_SET_PRESERVING_PASSES]
+                    if descriptor.name in allowlist]
 
     if not registry:
         return assertion
