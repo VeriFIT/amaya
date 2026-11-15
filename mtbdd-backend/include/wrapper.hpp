@@ -56,6 +56,25 @@ NFA construct_nfa_from_eq(Serialized_Atom* eq, s64 init_state, sylvan::BDDSET va
  * See `build_nfa_with_formula_entailement` for `stop_after_first_accepting_macrostate`.
  */
 NFA construct_dfa_for_atom_conjunction(Serialized_Quantified_Atom_Conjunction* raw_formula, bool stop_after_first_accepting_macrostate);
+/**
+ * Construct the automaton for `AND(atoms) intersected with nfa`, exploring only the product states reachable
+ * from the initial ones. The automaton for the conjunction is never built on its own: the transitions of an
+ * atom-state vector are built symbolically when the vector is first reached, and combined with the NFA's
+ * transitions by an MTBDD apply, as in compute_nfa_intersection.
+ *
+ * The conjunction must be quantifier-free (`quantified_var_cnt == 0`); its variables (`vars`) must be strictly
+ * ascending and every atom must carry one coefficient per variable. The result is over the union of the
+ * variables of the conjunction and of `nfa`, has a single final state without outgoing transitions, and is in
+ * general nondeterministic.
+ *
+ * With `stop_after_first_accepting_state`, the exploration stops after the first product state with a
+ * transition into the final state has been explored. The result then contains only the product states
+ * reached so far, accepts a nonempty subset of the language, and is suitable only for reading a model or
+ * testing emptiness. If the final state is not reachable, the result is the same as without the flag.
+ */
+NFA construct_atom_conjunction_intersected_with_nfa(Serialized_Quantified_Atom_Conjunction* raw_conjunction,
+                                                    NFA& nfa,
+                                                    bool stop_after_first_accepting_state);
 NFA perform_pad_closure_using_bit_sets(NFA& nfa);
 
 void amaya_enable_bit_sets();

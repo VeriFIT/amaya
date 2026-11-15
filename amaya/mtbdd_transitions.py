@@ -12,6 +12,7 @@ from typing import (
     Union,
 )
 from collections import defaultdict
+from dataclasses import dataclass
 import itertools
 
 from amaya import libamaya
@@ -74,6 +75,55 @@ def _snapshot_pynfa(nfa: MTBDD_NFA) -> libamaya.PyNFA:
     pynfa.initial_states = nfa.initial_states
     pynfa.final_states = nfa.final_states
     return pynfa
+
+
+@dataclass
+class Serialized_Atom_Conjunction:
+    """ A conjunction of atoms in the form the backend's conjunction constructions take. """
+    atoms: List[Tuple[int, List[int], int]]
+    """ (atom type, dense coefficients - one per variable of `solver_var_ids` - , modulus or 0) """
+    initial_state: List[int]
+    """ The right-hand side of each atom. """
+    solver_var_ids: List[int]
+    """ The ids of the variables of the conjunction, ascending; the position of a variable is its local track. """
+    var_id_to_local_track: Dict[int, int]
+
+
+def _serialize_atom_conjunction(conjunction: List[AST_Atom]) -> Serialized_Atom_Conjunction:
+    """ Linear atoms first, congruences after them. """
+    atom_type_map = {
+        '=': libamaya.Atom_Type.EQ,
+        '<=': libamaya.Atom_Type.INEQ,
+    }
+
+    all_vars = set()
+    linear_atoms: List[Relation] = []
+    congruences: List[Congruence] = []
+    for atom in conjunction:
+        if isinstance(atom, Congruence):
+            congruences.append(atom)
+        else:
+            assert isinstance(atom, Relation)
+            linear_atoms.append(atom)
+        all_vars.update(atom.vars)
+
+    solver_var_ids = sorted(var.id for var in all_vars)
+    var_id_to_local_track = dict((var_id, i) for i, var_id in enumerate(solver_var_ids))
+
+    atoms: List[Tuple[int, List[int], int]] = []
+    initial_state: List[int] = []
+    for atom in linear_atoms + congruences:
+        dense_coefs: List[int] = [0] * len(all_vars)
+        for i, var in enumerate(atom.vars):
+            dense_coefs[var_id_to_local_track[var.id]] = atom.coefs[i]
+        if isinstance(atom, Congruence):
+            atoms.append((libamaya.Atom_Type.CONGRUENCE, dense_coefs, atom.modulus))
+        else:
+            atoms.append((atom_type_map[atom.predicate_symbol], dense_coefs, 0))
+        initial_state.append(atom.rhs)
+
+    return Serialized_Atom_Conjunction(atoms=atoms, initial_state=initial_state, solver_var_ids=solver_var_ids,
+                                       var_id_to_local_track=var_id_to_local_track)
 
 
 def _add_transition(pynfa: libamaya.PyNFA, source: int, dest: int, symbol) -> None:
@@ -381,45 +431,13 @@ class MTBDDTransitionFn():
         determinized; it is suitable only for reading a model or testing emptiness. If the conjunction
         has no solution, the result is the same as without the flag.
         """
-        atom_type_map = {
-            '=': libamaya.Atom_Type.EQ,
-            '<=': libamaya.Atom_Type.INEQ,
-        }
-
-        all_vars = set()
-        linear_atoms: List[Relation] = []
-        congruences: List[Congruence] = []
-        for atom in conjunction:
-            if isinstance(atom, Congruence):
-                congruences.append(atom)
-                all_vars.update(atom.vars)
-            else:
-                assert isinstance(atom, Relation)
-                linear_atoms.append(atom)
-                all_vars.update(atom.vars)
-
-        solver_var_ids = sorted(var.id for var in all_vars)
-        var_id_to_local_track = dict((var_id, i) for i, var_id in enumerate(solver_var_ids))
-
-        atoms = []
-        initial_state = []
-        for atom in linear_atoms:
-            dense_coefs: List[int] = [0] * len(all_vars)
-            for i, var in enumerate(atom.vars):
-                dense_coefs[var_id_to_local_track[var.id]] = atom.coefs[i]
-            atoms.append((atom_type_map[atom.predicate_symbol], dense_coefs, 0))
-            initial_state.append(atom.rhs)
-
-        for atom in congruences:
-            dense_coefs = [0] * len(all_vars)
-            for i, var in enumerate(atom.vars):
-                dense_coefs[var_id_to_local_track[var.id]] = atom.coefs[i]
-            atoms.append((libamaya.Atom_Type.CONGRUENCE, dense_coefs, atom.modulus))
-            initial_state.append(atom.rhs)
+        serialized = _serialize_atom_conjunction(conjunction)
+        var_id_to_local_track = serialized.var_id_to_local_track
+        atoms, initial_state, solver_var_ids = serialized.atoms, serialized.initial_state, serialized.solver_var_ids
 
         quantified_local_tracks = [var_id_to_local_track[var.id] for var in sorted(quantified_vars) if var.id in var_id_to_local_track]
 
-        logger.info('Lazy constructing automaton for conjunction: %s', linear_atoms + congruences)
+        logger.info('Lazy constructing automaton for conjunction: %s', conjunction)
         logger.info('Variables to IDs: %s', var_id_to_local_track)
 
         pynfa = libamaya.construct_dfa_for_atom_conjunction(atoms, initial_state, solver_var_ids, quantified_local_tracks,
@@ -428,6 +446,26 @@ class MTBDDTransitionFn():
             # Partial and, with quantified variables, not determinized.
             return _nfa_from_pynfa(pynfa, alphabet, AutomatonType.NFA)
         return _nfa_from_pynfa(pynfa, alphabet, AutomatonType.DFA)
+
+    @staticmethod
+    def construct_atom_conjunction_intersected_with_nfa(conjunction: List[AST_Atom], nfa: MTBDD_NFA,
+                                                        stop_after_first_accepting_state: bool = False) -> MTBDD_NFA:
+        """
+        Construct the automaton for `AND(conjunction)` intersected with `nfa` without constructing the
+        automaton for the conjunction: only the product states reachable from the initial ones are explored
+        (`construct_atom_conjunction_intersected_with_nfa` in mtbdd-backend/include/wrapper.hpp).
+
+        The conjunction is quantifier-free. The result is over the variables of the conjunction and of
+        `nfa`, and is in general nondeterministic. With `stop_after_first_accepting_state`, the exploration
+        stops once the final state is reached; the result then accepts a nonempty subset of the language
+        and is suitable only for reading a model or testing emptiness.
+        """
+        serialized = _serialize_atom_conjunction(conjunction)
+        nfa_snapshot = _snapshot_pynfa(nfa)
+        pynfa = libamaya.construct_atom_conjunction_intersected_with_nfa(serialized.atoms, serialized.initial_state,
+                                                                         serialized.solver_var_ids, nfa_snapshot,
+                                                                         stop_after_first_accepting_state)
+        return _nfa_from_pynfa(pynfa, nfa.alphabet, AutomatonType.NFA)
 
     @staticmethod
     def determinize(nfa: MTBDD_NFA) -> MTBDD_NFA:

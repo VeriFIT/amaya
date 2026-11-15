@@ -20,6 +20,8 @@
 #include <stdexcept>
 #include <cstdlib>
 #include <cerrno>
+#include <map>
+#include <optional>
 
 using namespace sylvan;
 
@@ -617,6 +619,335 @@ NFA construct_nfa_from_eq(Serialized_Atom* eq, s64 init_state, BDDSET vars, u64 
     }
 
     return constructed_nfa;
+}
+
+/*
+ * Construction of the automaton for a quantifier-free conjunction of atoms intersected with an NFA.
+ *
+ * A state of the result is a pair (atom-state vector, NFA state). The atom-state vector holds one state per
+ * atom, with the transition semantics of the single-atom constructions above (construct_nfa_from_ineq,
+ * construct_nfa_from_eq, construct_nfa_from_congruence). Each of those automata has one final state without
+ * outgoing transitions, entered on a symbol that the atom accepts as the last (sign) symbol. In the product
+ * of all of them with the NFA, a state whose atom components are all that final state is final exactly when
+ * its NFA component is final, and has no outgoing transitions; all such final states are merged into one
+ * accepting sink. Product states that are not final in this sense have no final counterpart and are never
+ * final themselves.
+ */
+
+struct Product_Atom {
+    Presburger_Atom_Type type;
+    vector<s64> coefs;   // Dense, one coefficient per variable of the conjunction, in ascending variable order
+    s64 modulus_odd;     // Congruences only
+};
+
+/*
+ * Entry 2*i is the state of atom i. Entry 2*i + 1 is, for a congruence, the exponent of the power-of-two part
+ * of its current modulus (see construct_nfa_from_congruence), and 0 for the other atoms.
+ */
+typedef vector<s64> Atom_State_Vector;
+
+struct Atom_State_Vector_Hash {
+    std::size_t operator()(const Atom_State_Vector& state_vector) const {
+        std::size_t hash = state_vector.size();
+        for (s64 entry : state_vector) {
+            hash ^= std::hash<s64>{}(entry) + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        }
+        return hash;
+    }
+};
+
+// Atom-state handle standing for "every atom accepts the symbol as the last one".
+static const State ALL_ATOMS_ACCEPT_LAST_SYMBOL = 0;
+
+struct Atom_Conjunction_Product_Info {
+    const NFA* nfa;
+    std::map<std::pair<State, State>, State> product_handles;   // (atom-state handle, NFA state) -> product state
+    vector<Intersection_Discovery> work_queue;                     // .left = atom-state handle, .right = NFA state
+    State accepting_sink_handle;
+    bool  was_accepting_sink_reached;
+};
+
+TASK_DECL_3(MTBDD, atom_conjunction_product_op, MTBDD*, MTBDD*, size_t);
+
+TASK_IMPL_3(MTBDD, atom_conjunction_product_op, MTBDD*, p_atom_transitions, MTBDD*, p_nfa_transitions, size_t, param) {
+    MTBDD atom_transitions = *p_atom_transitions, nfa_transitions = *p_nfa_transitions;
+
+    if (atom_transitions == mtbdd_false || nfa_transitions == mtbdd_false) return mtbdd_false;
+    if (!mtbdd_isleaf(atom_transitions) || !mtbdd_isleaf(nfa_transitions)) return mtbdd_invalid;
+
+    auto info = reinterpret_cast<Atom_Conjunction_Product_Info*>(param);
+    auto atom_destinations = reinterpret_cast<Transition_Destination_Set*>(mtbdd_getvalue(atom_transitions));
+    auto nfa_destinations  = reinterpret_cast<Transition_Destination_Set*>(mtbdd_getvalue(nfa_transitions));
+
+    Transition_Destination_Set product_destinations;
+    for (State atom_destination : atom_destinations->destination_set) {
+        if (atom_destination == ALL_ATOMS_ACCEPT_LAST_SYMBOL) {
+            bool does_nfa_accept = false;
+            for (State nfa_destination : nfa_destinations->destination_set) {
+                if (info->nfa->final_states.contains(nfa_destination)) {
+                    does_nfa_accept = true;
+                    break;
+                }
+            }
+            if (does_nfa_accept) {
+                product_destinations.insert(info->accepting_sink_handle);
+                info->was_accepting_sink_reached = true;
+            }
+            continue;
+        }
+
+        for (State nfa_destination : nfa_destinations->destination_set) {
+            auto product_key = std::make_pair(atom_destination, nfa_destination);
+            State product_handle = static_cast<State>(info->product_handles.size()) + 1;  // 0 is the accepting sink
+            auto [entry_position, was_inserted] = info->product_handles.emplace(product_key, product_handle);
+            if (was_inserted) {
+                info->work_queue.push_back({.left = atom_destination, .right = nfa_destination, .handle = product_handle});
+            } else {
+                product_handle = entry_position->second;
+            }
+            product_destinations.insert(product_handle);
+        }
+    }
+
+    if (product_destinations.destination_set.empty()) return mtbdd_false;
+
+    product_destinations.sort();
+    return make_set_leaf(&product_destinations);
+}
+
+/*
+ * Transition MTBDD of one atom-state vector, built symbolically: like build_transitions_by_dot_product, but
+ * with one partial dot product per atom. `leaf_from_dot_products(dots)` returns the leaf for the symbols whose
+ * dot product with the coefficients of atom i is dots[i], or mtbdd_false.
+ */
+static MTBDD build_transitions_by_dot_products(const vector<BDDVAR>& vars, const vector<Product_Atom>& atoms,
+                                               const std::function<MTBDD(const vector<s64>&)>& leaf_from_dot_products) {
+    const u64 var_count = vars.size();
+    vector<unordered_map<vector<s64>, MTBDD, Atom_State_Vector_Hash>> memo(var_count + 1);
+    vector<MTBDD> referenced_nodes;
+
+    std::function<MTBDD(u64, const vector<s64>&)> build = [&](u64 var_idx, const vector<s64>& partial_dots) -> MTBDD {
+        auto& level_memo = memo[var_idx];
+        auto cached = level_memo.find(partial_dots);
+        if (cached != level_memo.end()) return cached->second;
+
+        MTBDD result;
+        if (var_idx == var_count) {
+            result = leaf_from_dot_products(partial_dots);
+        } else {
+            vector<s64> partial_dots_with_bit_set (partial_dots);
+            for (u64 atom_idx = 0; atom_idx < atoms.size(); atom_idx++) {
+                partial_dots_with_bit_set[atom_idx] += atoms[atom_idx].coefs[var_idx];
+            }
+            MTBDD low  = build(var_idx + 1, partial_dots);
+            MTBDD high = build(var_idx + 1, partial_dots_with_bit_set);
+            result = mtbdd_makenode(vars[var_idx], low, high);
+        }
+
+        // Keep every intermediate node alive until the whole MTBDD is built (see build_transitions_by_dot_product).
+        mtbdd_ref(result);
+        referenced_nodes.push_back(result);
+        level_memo.emplace(partial_dots, result);
+        return result;
+    };
+
+    MTBDD root = build(0, vector<s64>(atoms.size(), 0));
+    mtbdd_ref(root);
+    for (MTBDD node : referenced_nodes) mtbdd_deref(node);
+    return root;
+}
+
+/*
+ * The successor of `state_vector` for symbols with the given per-atom dot products, or nullopt if some atom
+ * has no transition on them (an equation, or a congruence with an even modulus, with an odd difference).
+ * `do_all_atoms_accept` is set to whether every atom accepts such a symbol as the last one.
+ */
+static std::optional<Atom_State_Vector> compute_atom_state_vector_post(const vector<Product_Atom>& atoms,
+                                                                       const Atom_State_Vector& state_vector,
+                                                                       const vector<s64>& dots,
+                                                                       bool& do_all_atoms_accept) {
+    Atom_State_Vector post_vector(state_vector.size(), 0);
+    do_all_atoms_accept = true;
+
+    for (u64 atom_idx = 0; atom_idx < atoms.size(); atom_idx++) {
+        const Product_Atom& atom = atoms[atom_idx];
+        s64 state    = state_vector[2*atom_idx];
+        s64 dot      = dots[atom_idx];
+        s64 post     = state - dot;
+        s64 fin_post = state + dot;
+
+        switch (atom.type) {
+            case Presburger_Atom_Type::PR_ATOM_INEQ: {  // construct_nfa_from_ineq
+                s64 post_div_2 = post / 2;
+                post_div_2 -= ((post % 2) != 0) * (post < 0);  // floor((state - dot) / 2)
+                post_vector[2*atom_idx] = post_div_2;
+                do_all_atoms_accept &= (fin_post >= 0);
+                break;
+            }
+            case Presburger_Atom_Type::PR_ATOM_EQ: {  // construct_nfa_from_eq
+                if ((post % 2) != 0) return std::nullopt;
+                post_vector[2*atom_idx] = post / 2;
+                do_all_atoms_accept &= (fin_post == 0);
+                break;
+            }
+            case Presburger_Atom_Type::PR_ATOM_CONGRUENCE: {  // construct_nfa_from_congruence
+                s64 modulus_2pow = state_vector[2*atom_idx + 1];
+                s64 modulus = combine_moduli(modulus_2pow, atom.modulus_odd);
+                do_all_atoms_accept &= ((fin_post % modulus) == 0);
+
+                if (modulus_2pow > 0) {
+                    if ((post % 2) != 0) return std::nullopt;
+                    post /= 2;
+                    s64 new_modulus = combine_moduli(modulus_2pow - 1, atom.modulus_odd);
+                    post %= new_modulus;
+                    post += (post < 0) * new_modulus;
+                    post_vector[2*atom_idx]     = post;
+                    post_vector[2*atom_idx + 1] = modulus_2pow - 1;
+                } else {
+                    post += atom.modulus_odd * ((post % 2) != 0);
+                    post /= 2;
+                    post = post % atom.modulus_odd;
+                    post += atom.modulus_odd * (post < 0);
+                    post_vector[2*atom_idx] = post;
+                }
+                break;
+            }
+            default:
+                throw std::invalid_argument("construct_atom_conjunction_intersected_with_nfa: unknown atom type");
+        }
+    }
+
+    return post_vector;
+}
+
+NFA construct_atom_conjunction_intersected_with_nfa(Serialized_Quantified_Atom_Conjunction* raw_conjunction,
+                                                    NFA& nfa,
+                                                    bool stop_after_first_accepting_state) {
+    LACE_ME;
+    Interrupt_Guard interrupt_guard;
+
+    if (raw_conjunction->quantified_var_cnt != 0) {
+        throw std::invalid_argument("construct_atom_conjunction_intersected_with_nfa: the conjunction must be quantifier-free");
+    }
+
+    const u64 var_count = raw_conjunction->var_cnt;
+    vector<BDDVAR> conjunction_vars(var_count);
+    for (u64 var_idx = 0; var_idx < var_count; var_idx++) {
+        conjunction_vars[var_idx] = static_cast<BDDVAR>(raw_conjunction->vars[var_idx]);
+        if (var_idx > 0 && conjunction_vars[var_idx - 1] >= conjunction_vars[var_idx]) {
+            // The MTBDD is built by branching on the variables in the given order, which must be the variable order.
+            throw std::invalid_argument("construct_atom_conjunction_intersected_with_nfa: variables must be strictly ascending");
+        }
+    }
+
+    vector<Product_Atom> atoms(raw_conjunction->atom_cnt);
+    Atom_State_Vector initial_state_vector(2 * raw_conjunction->atom_cnt, 0);
+    for (u64 atom_idx = 0; atom_idx < raw_conjunction->atom_cnt; atom_idx++) {
+        const Serialized_Atom& raw_atom = raw_conjunction->atoms[atom_idx];
+        if (raw_atom.coef_cnt != var_count) {
+            throw std::invalid_argument("construct_atom_conjunction_intersected_with_nfa: every atom needs one coefficient per variable");
+        }
+
+        Product_Atom& atom = atoms[atom_idx];
+        atom.type = static_cast<Presburger_Atom_Type>(raw_atom.type);
+        atom.coefs.assign(raw_atom.coefs, raw_atom.coefs + var_count);
+        atom.modulus_odd = 0;
+        initial_state_vector[2*atom_idx] = raw_conjunction->initial_state[atom_idx];
+
+        if (atom.type == Presburger_Atom_Type::PR_ATOM_CONGRUENCE) {
+            auto decomposed_modulus = decompose_modulus(raw_atom.modulus);
+            atom.modulus_odd = decomposed_modulus.modulus_odd;
+            initial_state_vector[2*atom_idx + 1] = decomposed_modulus.modulus_2pow;
+        }
+    }
+
+    BDDSET result_vars = nfa.vars;
+    for (BDDVAR var : conjunction_vars) result_vars = mtbdd_set_add(result_vars, var);
+    NFA result(result_vars, mtbdd_set_count(result_vars));
+
+    // Atom-state vectors are interned; handle 0 is ALL_ATOMS_ACCEPT_LAST_SYMBOL.
+    unordered_map<Atom_State_Vector, State, Atom_State_Vector_Hash> atom_state_handles;
+    vector<Atom_State_Vector> atom_states_by_handle = {Atom_State_Vector{}};
+    auto intern_atom_state_vector = [&](const Atom_State_Vector& state_vector) -> State {
+        auto [entry_position, was_inserted] = atom_state_handles.emplace(state_vector, static_cast<State>(atom_states_by_handle.size()));
+        if (was_inserted) atom_states_by_handle.push_back(state_vector);
+        return entry_position->second;
+    };
+
+    // The transitions of an atom-state vector do not depend on the NFA state it is paired with.
+    unordered_map<State, MTBDD> atom_transitions_by_handle;
+    auto get_atom_transitions = [&](State atom_state_handle) -> MTBDD {
+        auto cached = atom_transitions_by_handle.find(atom_state_handle);
+        if (cached != atom_transitions_by_handle.end()) return cached->second;
+
+        // Copied: interning a successor may reallocate atom_states_by_handle.
+        const Atom_State_Vector state_vector = atom_states_by_handle[atom_state_handle];
+        auto leaf_from_dot_products = [&](const vector<s64>& dots) -> MTBDD {
+            bool do_all_atoms_accept = false;
+            auto post_vector = compute_atom_state_vector_post(atoms, state_vector, dots, do_all_atoms_accept);
+            if (!post_vector.has_value()) return mtbdd_false;
+
+            Transition_Destination_Set leaf_contents;
+            if (do_all_atoms_accept) leaf_contents.insert(ALL_ATOMS_ACCEPT_LAST_SYMBOL);
+            leaf_contents.insert(intern_atom_state_vector(post_vector.value()));
+            leaf_contents.sort();
+            return make_set_leaf(&leaf_contents);
+        };
+
+        MTBDD transitions = build_transitions_by_dot_products(conjunction_vars, atoms, leaf_from_dot_products);
+        atom_transitions_by_handle.emplace(atom_state_handle, transitions);  // Holds the reference taken by the builder
+        return transitions;
+    };
+
+    Atom_Conjunction_Product_Info info;
+    info.nfa = &nfa;
+    info.accepting_sink_handle = 0;
+    info.was_accepting_sink_reached = false;
+
+    State initial_atom_state_handle = intern_atom_state_vector(initial_state_vector);
+    for (State nfa_initial_state : nfa.initial_states) {
+        State product_handle = static_cast<State>(info.product_handles.size()) + 1;
+        auto [entry_position, was_inserted] = info.product_handles.emplace(std::make_pair(initial_atom_state_handle, nfa_initial_state), product_handle);
+        if (!was_inserted) continue;
+        result.initial_states.insert(product_handle);
+        info.work_queue.push_back({.left = initial_atom_state_handle, .right = nfa_initial_state, .handle = product_handle});
+    }
+
+    const u64 product_op_id = get_next_operation_id();
+
+    while (!info.work_queue.empty()) {
+        AMAYA_CHECK_INTERRUPT();
+
+        Intersection_Discovery explored_product = info.work_queue.back();
+        info.work_queue.pop_back();
+
+        result.states.insert(explored_product.handle);
+
+        MTBDD atom_transitions = get_atom_transitions(explored_product.left);
+        auto nfa_transitions_position = nfa.transitions.find(explored_product.right);
+        MTBDD nfa_transitions = (nfa_transitions_position == nfa.transitions.end()) ? mtbdd_false : nfa_transitions_position->second;
+
+        MTBDD product_transitions = mtbdd_applyp(atom_transitions, nfa_transitions, reinterpret_cast<u64>(&info),
+                                                 TASK(atom_conjunction_product_op), product_op_id);
+        if (product_transitions != mtbdd_false) {
+            mtbdd_ref(product_transitions);
+            result.transitions[explored_product.handle] = product_transitions;
+        }
+
+        if (stop_after_first_accepting_state && info.was_accepting_sink_reached) {
+            // Transitions lead into the queued product states; they are kept as states without outgoing transitions.
+            for (auto& queued_product : info.work_queue) result.states.insert(queued_product.handle);
+            break;
+        }
+    }
+
+    if (info.was_accepting_sink_reached) {
+        result.add_state_final(info.accepting_sink_handle);
+    }
+
+    for (auto& [atom_state_handle, transitions] : atom_transitions_by_handle) mtbdd_deref(transitions);
+
+    return result;
 }
 
 void amaya_enable_bit_sets() {

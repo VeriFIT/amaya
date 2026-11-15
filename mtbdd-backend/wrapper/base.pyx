@@ -82,6 +82,7 @@ cdef extern from "wrapper.hpp":
     NFA c_construct_nfa_from_ineq "construct_nfa_from_ineq"(Serialized_Atom* ineq, s64 init_state, BDDSET vars, u64 var_count) except +
     NFA c_construct_nfa_from_eq "construct_nfa_from_eq"(Serialized_Atom* eq, s64 init_state, BDDSET vars, u64 var_count) except +
     NFA c_construct_dfa_for_atom_conjunction "construct_dfa_for_atom_conjunction"(Serialized_Quantified_Atom_Conjunction* raw_formula, bint stop_after_first_accepting_macrostate) except +
+    NFA c_construct_atom_conjunction_intersected_with_nfa "construct_atom_conjunction_intersected_with_nfa"(Serialized_Quantified_Atom_Conjunction* raw_conjunction, NFA& nfa, bint stop_after_first_accepting_state) except +
     NFA c_perform_pad_closure_using_bit_sets "perform_pad_closure_using_bit_sets"(NFA& nfa) except +
     void c_amaya_enable_bit_sets "amaya_enable_bit_sets"()
 
@@ -542,6 +543,60 @@ def construct_dfa_for_atom_conjunction(atoms, initial_state, vars, quantified_va
     result._c_nfa = NULL
     try:
         result._c_nfa = new NFA(c_construct_dfa_for_atom_conjunction(&conjunction, stop_after_first_accepting_macrostate))
+    except RuntimeError as err:
+        _reraise_interrupt(err)
+    return result
+
+
+def construct_atom_conjunction_intersected_with_nfa(atoms, initial_state, vars, PyNFA nfa,
+                                                    stop_after_first_accepting_state=False):
+    """
+    Automaton for `AND(atoms)` intersected with `nfa`, built without building the automaton for the conjunction.
+    See `construct_atom_conjunction_intersected_with_nfa` in mtbdd-backend/include/wrapper.hpp.
+
+    :param atoms: list of (atom_type: int (Atom_Type.*), coefs: list[int] of length len(vars), modulus: int)
+    :param initial_state: list[int], one entry per atom
+    :param vars: list[int] - the (solver-level) variable ids used by the conjunction, strictly ascending
+    :param nfa: the automaton to intersect with
+    :param stop_after_first_accepting_state: stop once the final state has been reached
+    """
+    cdef u64 atom_cnt = len(atoms)
+    cdef u64 var_cnt = len(vars)
+
+    cdef vector[s64] all_coefs
+    all_coefs.resize(atom_cnt * var_cnt)
+
+    cdef vector[Serialized_Atom] c_atoms
+    c_atoms.resize(atom_cnt)
+
+    cdef u64 i, j
+    for i in range(atom_cnt):
+        atom_type, coefs, modulus = atoms[i]
+        for j in range(var_cnt):
+            all_coefs[i * var_cnt + j] = coefs[j]
+        c_atoms[i].type = atom_type
+        c_atoms[i].coefs = all_coefs.data() + i * var_cnt
+        c_atoms[i].coef_cnt = var_cnt
+        c_atoms[i].modulus = modulus
+
+    cdef vector[s64] c_initial_state = initial_state
+    cdef vector[u64] c_vars = vars
+
+    cdef Serialized_Quantified_Atom_Conjunction conjunction
+    conjunction.atoms = c_atoms.data()
+    conjunction.atom_cnt = atom_cnt
+    conjunction.initial_state = c_initial_state.data()
+    conjunction.vars = c_vars.data()
+    conjunction.var_cnt = var_cnt
+    conjunction.quantified_vars = NULL
+    conjunction.quantified_var_cnt = 0
+
+    result = PyNFA()
+    del result._c_nfa
+    result._c_nfa = NULL
+    try:
+        result._c_nfa = new NFA(c_construct_atom_conjunction_intersected_with_nfa(&conjunction, nfa._c_nfa[0],
+                                                                                  stop_after_first_accepting_state))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
