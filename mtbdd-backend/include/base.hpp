@@ -11,6 +11,7 @@
 #include <vector>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 
 #include <inttypes.h>
@@ -164,6 +165,22 @@ struct NFA {
     std::set<State> get_state_post(State state);
     // One (arbitrary) symbol per destination reachable from `state`, in time linear in the size of its MTBDD.
     std::vector<Transition> get_state_post_with_some_symbol(State state) const;
+
+    /**
+     * Depth-first search for a word leading from one of `initial_states` to one of `final_states`; the
+     * state sets are passed in because the Python side holds the authoritative ones. Returns true and
+     * writes the word (one 0/1 entry per track for every symbol) into `model` if one exists. The word
+     * is nonempty: a final state is detected only when it is entered.
+     *
+     * The exploration order is that of `amaya/mtbdd_automatons.py:MTBDD_NFA.find_model`: initial
+     * states are pushed in the given order, the stack is popped from the back, and the successors of a
+     * state are taken in the order of `get_state_post_with_some_symbol`. If
+     * `mark_states_reached_by_empty_word_as_visited` is false (integer solution domain), a popped
+     * initial state reached by the empty word is not marked visited, so it can be pushed again with a
+     * nonempty word.
+     */
+    bool find_model(const std::vector<State>& initial_states, const std::unordered_set<State>& final_states,
+                    bool mark_states_reached_by_empty_word_as_visited, std::vector<std::vector<u8>>& model) const;
 
     void remove_states(std::set<State>& states_to_remove);
 

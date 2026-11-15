@@ -6,6 +6,7 @@ from libcpp.vector cimport vector
 from libcpp.set cimport set as cpp_set
 from libcpp.string cimport string
 from libcpp.unordered_map cimport unordered_map
+from libcpp.unordered_set cimport unordered_set
 from libcpp.utility cimport move
 
 
@@ -123,6 +124,8 @@ cdef extern from "base.hpp":
 
         cpp_set[State] get_state_post(State state) except +
         vector[Transition] get_state_post_with_some_symbol(State state) except +
+        bint find_model(vector[State]& initial_states, unordered_set[State]& final_states,
+                        bint mark_states_reached_by_empty_word_as_visited, vector[vector[u8]]& model) except +
 
         void remove_states(cpp_set[State]& states_to_remove) except +
 
@@ -258,6 +261,24 @@ cdef class PyNFA:
         """[(dest, symbol)] with one symbol (bytes, one 0/1 per track) for every destination reachable from `state`."""
         cdef vector[Transition] transitions = self._c_nfa.get_state_post_with_some_symbol(state)
         return [(t.to, bytes(t.symbol)) for t in transitions]
+
+    def find_model(self, initial_states, final_states, bint mark_states_reached_by_empty_word_as_visited):
+        """
+        A word from one of `initial_states` (iterated in the given order) to one of `final_states`, as a
+        tuple of symbols (tuples with one 0/1 per track), or None. See `NFA::find_model` (include/base.hpp).
+        """
+        cdef vector[State] c_initial_states = list(initial_states)
+        cdef unordered_set[State] c_final_states = set(final_states)
+        cdef vector[vector[u8]] model
+        cdef bint was_model_found
+        try:
+            was_model_found = self._c_nfa.find_model(c_initial_states, c_final_states,
+                                                     mark_states_reached_by_empty_word_as_visited, model)
+        except RuntimeError as err:
+            _reraise_interrupt(err)
+        if not was_model_found:
+            return None
+        return tuple(tuple(symbol) for symbol in model)
 
     def get_symbolic_transitions_for_state(self, State state):
         cdef vector[Transition] transitions = self._c_nfa.get_symbolic_transitions_for_state(state)

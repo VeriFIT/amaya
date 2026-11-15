@@ -420,14 +420,18 @@ static void collect_post_with_some_symbol_rec(MTBDD node, State origin, std::vec
     path[track] = 0;  // Tracks the MTBDD does not test along a path are don't-care; report them as 0
 }
 
-std::vector<Transition> NFA::get_state_post_with_some_symbol(State state) const {
-    auto state_mtbdd_it = transitions.find(state);
-    if (state_mtbdd_it == transitions.end()) return {};
-
+static std::unordered_map<u32, u64> compute_bdd_var_to_track_map(sylvan::BDDSET vars, u64 var_count) {
     std::vector<u32> var_arr(var_count);
     sylvan::mtbdd_set_to_array(vars, var_arr.data());
     std::unordered_map<u32, u64> var_to_track;
     for (u64 track = 0; track < var_count; track++) var_to_track[var_arr[track]] = track;
+    return var_to_track;
+}
+
+static std::vector<Transition> compute_state_post_with_some_symbol(const std::unordered_map<State, sylvan::MTBDD>& transitions, State state, u64 var_count,
+                                                                   const std::unordered_map<u32, u64>& var_to_track) {
+    auto state_mtbdd_it = transitions.find(state);
+    if (state_mtbdd_it == transitions.end()) return {};
 
     std::vector<u8> path(var_count, 0);
     std::unordered_set<MTBDD> visited;
@@ -435,6 +439,71 @@ std::vector<Transition> NFA::get_state_post_with_some_symbol(State state) const 
     std::vector<Transition> output;
     collect_post_with_some_symbol_rec(state_mtbdd_it->second, state, path, var_to_track, visited, seen_destinations, output);
     return output;
+}
+
+std::vector<Transition> NFA::get_state_post_with_some_symbol(State state) const {
+    auto var_to_track = compute_bdd_var_to_track_map(vars, var_count);
+    return compute_state_post_with_some_symbol(transitions, state, var_count, var_to_track);
+}
+
+bool NFA::find_model(const std::vector<State>& initial_states_in_exploration_order, const std::unordered_set<State>& final_states_to_reach,
+                     bool mark_states_reached_by_empty_word_as_visited, std::vector<std::vector<u8>>& model) const {
+    Interrupt_Guard interrupt_guard;
+
+    // The words of the explored states form a tree; a state on the stack refers to the node of its word.
+    struct Word_Tree_Node {
+        s64 parent_node_idx;
+        std::vector<u8> last_symbol;
+    };
+    const s64 EMPTY_WORD_NODE_IDX = -1;
+
+    auto var_to_track = compute_bdd_var_to_track_map(vars, var_count);
+
+    std::vector<Word_Tree_Node> word_tree;
+    std::vector<std::pair<State, s64>> states_with_word_to_explore;
+    std::unordered_set<State> states_waiting_for_exploration;
+    std::unordered_set<State> visited_states;
+
+    for (State initial_state : initial_states_in_exploration_order) {
+        states_with_word_to_explore.push_back({initial_state, EMPTY_WORD_NODE_IDX});
+        states_waiting_for_exploration.insert(initial_state);
+    }
+
+    u64 explored_state_count = 0;
+    while (!states_with_word_to_explore.empty()) {
+        if ((++explored_state_count & 0x3FF) == 0) AMAYA_CHECK_INTERRUPT();
+
+        auto [state, word_node_idx] = states_with_word_to_explore.back();
+        states_with_word_to_explore.pop_back();
+
+        states_waiting_for_exploration.erase(state);
+        if (word_node_idx != EMPTY_WORD_NODE_IDX || mark_states_reached_by_empty_word_as_visited) {
+            visited_states.insert(state);
+        }
+
+        auto post = compute_state_post_with_some_symbol(transitions, state, var_count, var_to_track);
+        for (auto& transition : post) {
+            State destination = transition.to;
+            // A state waiting for exploration is not final, otherwise the search would have ended.
+            if (visited_states.contains(destination) || states_waiting_for_exploration.contains(destination)) continue;
+
+            word_tree.push_back(Word_Tree_Node{word_node_idx, std::move(transition.symbol)});
+            s64 destination_word_node_idx = static_cast<s64>(word_tree.size()) - 1;
+
+            if (final_states_to_reach.contains(destination)) {
+                model.clear();
+                for (s64 node_idx = destination_word_node_idx; node_idx != EMPTY_WORD_NODE_IDX; node_idx = word_tree[node_idx].parent_node_idx) {
+                    model.push_back(word_tree[node_idx].last_symbol);
+                }
+                std::reverse(model.begin(), model.end());
+                return true;
+            }
+
+            states_with_word_to_explore.push_back({destination, destination_word_node_idx});
+            states_waiting_for_exploration.insert(destination);
+        }
+    }
+    return false;
 }
 
 std::set<State> NFA::get_state_post(State state) {
