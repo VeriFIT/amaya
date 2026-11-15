@@ -733,6 +733,7 @@ class DpllTAutomataConfig:
     use_bounds_refutation: bool = True
     bound_propagation_rounds: int = 4
     project_bound_vars: bool = True
+    construct_assertion_intersected_with_phi: bool = False
     prefix_cache_max_entries: int = 4096
     max_optimizer_invocations: Optional[int] = None
     report: bool = False
@@ -754,6 +755,8 @@ that table and would otherwise enable the strategy on every run (the comment abo
 | `--dpllt-no-bounds-refutation` | §6.5b off; every asserted set goes to the automata engine |
 | `--dpllt-bound-propagation-rounds N` | §6.5b rule R5 round cap (default 4); 0 leaves R1-R4 |
 | `--dpllt-no-bound-var-projection` | §6.4 off |
+| `--dpllt-construct-assertion-with-phi` | (Experimental, off by default) An assertion that is a conjunction of atoms is decided by exploring the product of its atoms with the automaton for `phi` up to the first accepting state (`amaya/dpllt_automata.py:_try_decide_iteration_by_constructing_assertion_intersected_with_phi`), instead of building the assertion's automaton and intersecting it |
+| `--early-stop-lazy-construction` | (Experimental, off by default; not specific to this strategy) When `phi` is a conjunction of atoms, `phi AND assertion` is decided by the lazy construction stopped at the first accepting state (`amaya/dpllt_automata.py:_try_decide_iteration_by_early_stopping_lazy_construction`) |
 | `--dpllt-prefix-cache-entries N` | §8.2 bound |
 | `--dpllt-report` | Log the counters of §12 |
 | `--dpllt-show-existential-part` | Print `chi` and exit without evaluating; implies `--use-dpllt-automata`. See below |

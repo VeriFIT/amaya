@@ -225,6 +225,15 @@ argparser.add_argument('--dpllt-bound-propagation-rounds',
                              'bounds from inequalities whose other variables are already bounded, which is what\n'
                              'makes an asserted equality act as a substitution.'))
 
+argparser.add_argument('--dpllt-construct-assertion-with-phi',
+                       action='store_true',
+                       dest='dpllt_construct_assertion_with_phi',
+                       default=False,
+                       help=('(EXPERIMENTAL) Decide an iteration whose assertion is a conjunction of atoms by\n'
+                             'exploring the product of its atoms with the automaton for the general part, stopping\n'
+                             'at the first accepting state, instead of building the automaton for the assertion and\n'
+                             'intersecting the two. Requires -m MTBDD and the integers as the solution domain.'))
+
 argparser.add_argument('--dpllt-no-bound-var-projection',
                        action='store_true',
                        dest='dpllt_no_bound_var_projection',
@@ -738,6 +747,8 @@ if args.dpllt_no_bound_var_projection:
     solver_config.dpllt_automata.project_bound_vars = False
 if args.dpllt_prefix_cache_entries is not None:
     solver_config.dpllt_automata.prefix_cache_max_entries = args.dpllt_prefix_cache_entries
+if args.dpllt_construct_assertion_with_phi:
+    solver_config.dpllt_automata.construct_assertion_intersected_with_phi = True
 if args.dpllt_report:
     solver_config.dpllt_automata.report = True
 

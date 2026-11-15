@@ -134,3 +134,101 @@ def test_unsatisfiable_combination_has_an_empty_language():
         result = MTBDDTransitionFn.construct_atom_conjunction_intersected_with_nfa(
             conjunction, nfa, stop_after_first_accepting_state=stop_after_first_accepting_state)
         assert result.find_model() is None
+
+
+# --- The DPLL(T) iteration (`--dpllt-construct-assertion-with-phi`) ------------------------------
+
+@pytest.fixture
+def mtbdd_dpllt_config():
+    import copy
+    from amaya.config import BackendType, DpllTAutomataConfig, SolutionDomain, solver_config
+
+    saved_backend = solver_config.backend_type
+    saved_domain = solver_config.solution_domain
+    saved_dpllt = copy.deepcopy(solver_config.dpllt_automata)
+
+    solver_config.backend_type = BackendType.MTBDD
+    solver_config.solution_domain = SolutionDomain.INTEGERS
+    solver_config.dpllt_automata = DpllTAutomataConfig()
+
+    yield solver_config
+
+    solver_config.backend_type = saved_backend
+    solver_config.solution_domain = saved_domain
+    solver_config.dpllt_automata = saved_dpllt
+
+
+def test_iteration_is_decided_against_a_general_part_that_is_not_a_conjunction_of_atoms(mtbdd_dpllt_config):
+    from amaya import dsl
+    from amaya.dpllt_automata import (
+        Dpllt_Run_Statistics,
+        General_Part,
+        _try_decide_iteration_by_constructing_assertion_intersected_with_phi,
+    )
+    from amaya.preprocessing.conditional_equality_resolution import fill_referenced_vars
+    from amaya.preprocessing.eval import VarInfo
+    from amaya.relations_structures import VariableType
+    from amaya.solver_core import EvaluationContext
+
+    var_table = {
+        X: VarInfo(name='x', type=VariableType.INT, is_formula_param=True),
+        Z: VarInfo(name='z', type=VariableType.INT, is_formula_param=False),
+    }
+    ctx = EvaluationContext(alphabet=LSBF_Alphabet.from_vars(var_table.keys()), var_table=var_table)
+
+    x_is_odd = dsl._neg(dsl._exists((Z,), _eq([(1, X), (-2, Z)], 0)))
+    fill_referenced_vars(x_is_odd)
+    statistics = Dpllt_Run_Statistics()
+    general_part = General_Part((x_is_odd,), ctx, statistics)
+    assert general_part.atoms is None
+
+    satisfiable_assertion = dsl._and(_le([(1, X)], 7), _le([(-1, X)], -6))     # 6 <= x <= 7, x odd -> x = 7
+    unsatisfiable_assertion = dsl._and(_le([(1, X)], 6), _le([(-1, X)], -6))   # x = 6, x odd
+
+    was_decided, result = _try_decide_iteration_by_constructing_assertion_intersected_with_phi(
+        general_part, satisfiable_assertion, ctx, statistics)
+    assert was_decided
+    assert result is not None and result.model[X] == 7
+
+    was_decided, result = _try_decide_iteration_by_constructing_assertion_intersected_with_phi(
+        general_part, unsatisfiable_assertion, ctx, statistics)
+    assert was_decided and result is None
+
+    assert statistics.iterations_decided_by_constructing_assertion_intersected_with_phi == 2
+
+
+DPLLT_SOURCES = [
+    # The general part contains a negated quantifier, so it is not a conjunction of atoms.
+    ("""
+(declare-fun x () Int)
+(declare-fun y () Int)
+(assert (<= 0 x))
+(assert (<= x 10))
+(assert (not (exists ((z Int)) (= x (* 2 z)))))
+(assert (or (exists ((w Int)) (and (= x (* 3 w)) (<= 2 w)))
+            (exists ((v Int)) (and (= y (+ x v)) (<= v 2) (<= 2 v) (<= y 0)))))
+(check-sat)
+""", True),
+    ("""
+(declare-fun x () Int)
+(assert (<= 0 x))
+(assert (<= x 4))
+(assert (not (exists ((z Int)) (= x (* 2 z)))))
+(assert (or (exists ((w Int)) (= x (* 4 w)))
+            (exists ((v Int)) (and (= x (+ v 6)) (<= 0 v)))))
+(check-sat)
+""", False),
+]
+
+
+@pytest.mark.parametrize('source_text, is_satisfiable', DPLLT_SOURCES)
+def test_dpllt_verdict_does_not_depend_on_the_flag(source_text, is_satisfiable, mtbdd_dpllt_config):
+    from amaya.dpllt_automata import perform_whole_evaluation_on_source_text_with_dpllt_automata
+
+    verdicts = []
+    for flag_value in (False, True):
+        mtbdd_dpllt_config.dpllt_automata.construct_assertion_intersected_with_phi = flag_value
+        result = perform_whole_evaluation_on_source_text_with_dpllt_automata(source_text)
+        verdicts.append(result is not None and result.model is not None)
+
+    assert verdicts == [is_satisfiable, is_satisfiable]

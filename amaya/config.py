@@ -298,6 +298,16 @@ class DpllTAutomataConfig:
     the bare conjunction and the verdict is read off the unprojected intersection.
     """
 
+    construct_assertion_intersected_with_phi: bool = False
+    """
+    (EXPERIMENTAL, disabled by default) Decide an iteration whose assertion is a conjunction of atoms
+    (possibly under its existential prefix) by exploring the product of the assertion's atoms with the
+    automaton for the general part, stopping at the first accepting state
+    (`amaya.mtbdd_transitions.MTBDDTransitionFn.construct_atom_conjunction_intersected_with_nfa`), instead of
+    building the automaton for the assertion and intersecting it with that automaton. Requires the MTBDD
+    backend and the integers as the solution domain; other iterations use the ordinary path.
+    """
+
     prefix_cache_max_entries: int = 4096
     """ Bound on the conjunction-prefix automaton cache; 0 disables the cache. """
 

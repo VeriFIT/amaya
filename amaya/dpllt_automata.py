@@ -1731,6 +1731,8 @@ class Dpllt_Run_Statistics:
     prefix_cache_evictions: int = 0
     longest_prefix_hit_length: int = 0
     iterations_decided_by_early_stopping_lazy_construction: int = 0
+    iterations_decided_by_constructing_assertion_intersected_with_phi: int = 0
+    max_assertion_with_phi_product_states: int = 0
 
     def absorb_builder_counters(self, builder: Assertion_Automaton_Builder):
         self.prefix_cache_hits = builder.prefix_cache_hits
@@ -2010,6 +2012,12 @@ def _decide_asserted_literals(abstraction: Monotone_Literal_Abstraction,
         if was_decided:
             return model_of_iteration
 
+    if config.construct_assertion_intersected_with_phi:
+        was_decided, model_of_iteration = _try_decide_iteration_by_constructing_assertion_intersected_with_phi(
+            general_part, assertion, ctx, statistics)
+        if was_decided:
+            return model_of_iteration
+
     nfa_for_assertion = builder.build_automaton_for_assertion(assertion, ctx)
     statistics.max_assertion_automaton_states = max(statistics.max_assertion_automaton_states,
                                                     len(nfa_for_assertion.states))
@@ -2054,6 +2062,54 @@ def _try_decide_iteration_by_early_stopping_lazy_construction(
         return False, None
 
     statistics.iterations_decided_by_early_stopping_lazy_construction += 1
+    binary_model = nfa.find_model()
+    if binary_model is None:  # An empty model is a *satisfiable* one - not falsy-testable
+        return True, None
+    return True, _make_sat_evaluation_result(ctx, nfa, binary_model)
+
+
+def _try_decide_iteration_by_constructing_assertion_intersected_with_phi(
+        general_part: General_Part,
+        assertion: ASTp_Node,
+        ctx: EvaluationContext,
+        statistics: Dpllt_Run_Statistics) -> Tuple[bool, Optional[Evaluation_Result]]:
+    """
+    Decide `phi AND assertion`, for an assertion that is a conjunction of atoms (possibly under its
+    existential prefix), by exploring the product of the atoms with the automaton for `phi` up to the
+    first accepting state (`MTBDDTransitionFn.construct_atom_conjunction_intersected_with_nfa`).
+
+    The prefix is dropped rather than projected: its variables are renamed apart from the rest of the
+    formula (§5.1 of `docs/DPLLT_WITH_AUTOMATA.md`), so `phi` does not mention them,
+    `phi AND exists X. A` is satisfiable iff `phi AND A` is, and a model of the latter restricted to the
+    formula parameters is a model of the former.
+
+    Returns `(False, None)` when the construction does not apply, and `(True, result)` otherwise, where
+    `result` is None if the conjunction is unsatisfiable.
+    """
+    if solver_config.backend_type != BackendType.MTBDD or solver_config.solution_domain != SolutionDomain.INTEGERS:
+        return False, None
+
+    assertion_conjunction = parse.match_quantified_atom_conjunction(assertion)
+    if assertion_conjunction is None:
+        return False, None
+
+    atoms = parse.divide_relations_of_conjunction_by_gcd(assertion_conjunction.atoms)
+    if atoms is None:
+        statistics.iterations_decided_by_constructing_assertion_intersected_with_phi += 1
+        return True, None
+    if not atoms:
+        return False, None
+
+    from amaya.mtbdd_transitions import MTBDDTransitionFn
+    nfa_for_phi = general_part.get_automaton()
+    nfa = MTBDDTransitionFn.construct_atom_conjunction_intersected_with_nfa(atoms, nfa_for_phi,
+                                                                            stop_after_first_accepting_state=True)
+    statistics.iterations_decided_by_constructing_assertion_intersected_with_phi += 1
+    statistics.max_assertion_with_phi_product_states = max(statistics.max_assertion_with_phi_product_states,
+                                                           len(nfa.states))
+    logger.info('DPLL(T): iteration %d, the product of the assertion with the general part explored %d states.',
+                statistics.iteration_count, len(nfa.states))
+
     binary_model = nfa.find_model()
     if binary_model is None:  # An empty model is a *satisfiable* one - not falsy-testable
         return True, None
