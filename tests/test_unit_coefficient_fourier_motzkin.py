@@ -143,6 +143,31 @@ def test_eliminating_one_variable_enables_another():
     assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[X])
 
 
+def test_combined_atom_is_divided_by_gcd_with_floor_of_rhs():
+    # exists v. (0 <= v  and  v <= 5w + 7)   --->   -5w <= 7   --->   -w <= floor(7/5) = 1
+    formula = dsl._exists((V,), dsl._and(_le([(-1, V)], 0), _le([(1, V), (-5, W)], 7)))
+
+    result = _eliminate(formula, W, V)
+
+    assert result == _le([(-1, W)], 1)
+    assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[W])
+
+
+def test_gcd_division_makes_another_variable_eliminable():
+    # exists v, w. (0 <= v  and  v <= 5w + 300007  and  w <= -3  and  w <= x - 449582)
+    # Eliminating v gives -5w <= 300007, i.e. -w <= 60001; w is then eliminable: x >= 389581.
+    formula = dsl._exists((V, W), dsl._and(
+        _le([(-1, V)], 0),
+        _le([(1, V), (-5, W)], 300007),
+        _le([(1, W)], -3),
+        _le([(1, W), (-1, X)], -449582),
+    ))
+
+    result = _eliminate(formula, X, V, W)
+
+    assert result == _le([(-1, X)], -389581)
+
+
 def test_non_unit_coefficient_is_left_unchanged():
     formula = dsl._exists((V,), dsl._and(_le([(-2, V)], 0), _le([(1, V), (-1, X)], 0)))
 

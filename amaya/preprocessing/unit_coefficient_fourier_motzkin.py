@@ -22,11 +22,17 @@ Occurrence shapes that abort the rewrite for `v` (the formula is left unchanged 
     - more than `|L| + |U|` atoms produced, i.e. `|L| * |U| > |L| + |U|` (see `_produces_no_more_atoms`).
 
 When the solution domain is the natural numbers, `v >= 0` is added to the lower bounds of `v`.
+
+Every combined atom `sum a_i.x_i <= k` with `g = gcd(a_i) > 1` is replaced by
+`sum (a_i / g).x_i <= floor(k / g)`, which is an equivalence for integer-valued `x_i` (both solution
+domains). The division can give another variable of the same quantifier a unit coefficient, making it
+eliminable in the next round of `_eliminate_vars_of_quantifier`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Dict, List, Optional, Tuple
 
 from amaya.preprocessing.conditional_equality_resolution import (
@@ -127,10 +133,17 @@ def _produces_no_more_atoms(bounds: Bounds_On_Eliminated_Var) -> bool:
 
 def _combine_lower_and_upper_bound(lower_bound: Unit_Coefficient_Bound, upper_bound: Unit_Coefficient_Bound) -> ASTp_Node:
     """
-    (-v + T_lower <= k_lower) + (v + T_upper <= k_upper)  =  (T_lower + T_upper <= k_lower + k_upper)
+    (-v + T_lower <= k_lower) + (v + T_upper <= k_upper)  =  (T_lower + T_upper <= k_lower + k_upper),
+    divided by the gcd of its coefficients (see the module docstring).
     """
     vars_, coefs = _linear_combo(lower_bound.terms, 1, upper_bound.terms, 1)
-    combined = Relation(vars=vars_, coefs=coefs, rhs=lower_bound.rhs + upper_bound.rhs, predicate_symbol='<=')
+    rhs = lower_bound.rhs + upper_bound.rhs
+    if coefs:
+        coef_gcd = math.gcd(*coefs)
+        if coef_gcd > 1:
+            coefs = [coef // coef_gcd for coef in coefs]
+            rhs = rhs // coef_gcd  # floor, exact for integers of any size
+    combined = Relation(vars=vars_, coefs=coefs, rhs=rhs, predicate_symbol='<=')
     return _fold_relation(combined)
 
 
