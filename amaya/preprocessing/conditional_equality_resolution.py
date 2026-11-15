@@ -19,7 +19,10 @@ is rewritten (for n >= 2) into the quantifier-free formula:
 
 which for n == 2 is `(or alpha_1 alpha_2 (t_1 = t_2))`. See `_resolve_without_inequalities`
 for the equivalence argument; the flat disjunction `(or alpha_1 ... alpha_n (t_i = t_j) ...)`
-is not equivalent for n >= 3. The n == 1 case is intentionally not
+is not equivalent for n >= 3. A clause may also carry the equality inside a conjunction,
+`(or alpha_i (and (x = t_i) R_i))`, where `R_i` does not mention `x`: it is treated as the clause
+`(or alpha_i (x = t_i))` together with the conjunct `(or alpha_i R_i)`, which is kept in the result
+(distributivity; see `_match_clause_with_conjunctive_branch`). The n == 1 case is intentionally not
 handled here: with a single clause `x` is unconstrained by anything else, so
 `exists x. (alpha_1 or x = t_1)` is unconditionally true - a different (already
 existing) optimization is responsible for dropping such trivially-true quantifiers.
@@ -271,8 +274,24 @@ def _match_clause_against_var(clause: ASTp_Node, var: Var) -> Optional[Tuple[AST
     if not children_containing_var:
         return None
 
+    normalized_equality = _normalize_common_defining_equality(children_containing_var, var)
+    if normalized_equality is None:
+        return None
+
+    var_child_ids = {id(child) for child in children_containing_var}
+    escape_children = [child for child in clause.children if id(child) not in var_child_ids]
+    escape = _make_or(escape_children)
+
+    return escape, normalized_equality
+
+
+def _normalize_common_defining_equality(equality_candidates: List[ASTp_Node], var: Var) -> Optional[Relation]:
+    """
+    The equality `var + ... = t` (coefficient of `var` normalized to +1) if every candidate is that same
+    equality up to sign, with `var` at coefficient +1 or -1. None otherwise.
+    """
     normalized_equality: Optional[Relation] = None
-    for equality_candidate in children_containing_var:
+    for equality_candidate in equality_candidates:
         if not (isinstance(equality_candidate, Relation) and equality_candidate.predicate_symbol == '='):
             return None
 
@@ -288,13 +307,43 @@ def _match_clause_against_var(clause: ASTp_Node, var: Var) -> Optional[Tuple[AST
         elif candidate_normalized != normalized_equality:
             return None
 
-    assert normalized_equality is not None
+    return normalized_equality
 
-    var_child_ids = {id(child) for child in children_containing_var}
-    escape_children = [child for child in clause.children if id(child) not in var_child_ids]
+
+def _match_clause_with_conjunctive_branch(clause: ASTp_Node, var: Var) -> Optional[Tuple[ASTp_Node, Relation, ASTp_Node]]:
+    """
+    If `clause` has the shape `(or alpha (and (var = t) R_1 ... R_k))`, where `alpha` and every `R_i` do not
+    mention `var`, return `(alpha, var = t, side_condition)` with `side_condition = (or alpha (and R_1 ... R_k))`.
+    Otherwise return None. The conjunction may contain the equality on `var` more than once (same
+    equality up to sign), as in `_match_clause_against_var`.
+
+    By distributivity, `(or alpha (and (var = t) R))` is equivalent to `(and (or alpha (var = t)) (or alpha R))`;
+    the first conjunct is a clause of the shape `_match_clause_against_var` matches, and the second does not
+    mention `var`, so it stays in the body as a conjunct after `var` is eliminated.
+    """
+    if not (isinstance(clause, AST_Connective) and clause.type == Connective_Type.OR):
+        return None
+
+    children_containing_var = [child for child in clause.children if var in _extract_referenced_vars(child)]
+    if len(children_containing_var) != 1:
+        return None
+
+    branch = children_containing_var[0]
+    if not (isinstance(branch, AST_Connective) and branch.type == Connective_Type.AND):
+        return None
+
+    conjuncts_containing_var = [conjunct for conjunct in branch.children if var in _extract_referenced_vars(conjunct)]
+    remaining_conjuncts = [conjunct for conjunct in branch.children if var not in _extract_referenced_vars(conjunct)]
+
+    normalized_equality = _normalize_common_defining_equality(conjuncts_containing_var, var)
+    if normalized_equality is None:
+        return None
+
+    escape_children = [child for child in clause.children if child is not branch]
     escape = _make_or(escape_children)
+    side_condition = _make_or([*escape_children, _make_and(remaining_conjuncts)])
 
-    return escape, normalized_equality
+    return escape, normalized_equality, side_condition
 
 
 def _try_eliminate_var(var: Var, node: ASTp_Node) -> Optional[ASTp_Node]:
@@ -303,7 +352,10 @@ def _try_eliminate_var(var: Var, node: ASTp_Node) -> Optional[ASTp_Node]:
     resolution. Returns the rewritten body, or None if `var` does not conform to the required
     pattern: `node` must be an AND whose children mentioning `var` are either
 
-      - `(or alpha (var = t))` clauses (at least two of them are required), or
+      - `(or alpha (var = t))` clauses (at least two of them are required), possibly with the
+        equality in a conjunction `(or alpha (and (var = t) R))` whose other conjuncts `R` do not
+        mention `var` (see `_match_clause_with_conjunctive_branch`; `(or alpha R)` is kept as a
+        conjunct of the result), or
       - unconditional inequalities on `var` (`c*var + (rest, possibly other vars) <= k`, any
         number of them).
 
@@ -316,6 +368,7 @@ def _try_eliminate_var(var: Var, node: ASTp_Node) -> Optional[ASTp_Node]:
     matches: List[_Clause_Match] = []
     inequality_indices: List[int] = []
     inequalities: List[Relation] = []
+    side_conditions: List[ASTp_Node] = []
 
     for idx, child in enumerate(node.children):
         if not var in _extract_referenced_vars(child):
@@ -327,10 +380,15 @@ def _try_eliminate_var(var: Var, node: ASTp_Node) -> Optional[ASTp_Node]:
             continue
 
         matched = _match_clause_against_var(child, var)
-        if matched is None:
-            return None
+        if matched is not None:
+            escape, equality = matched
+        else:
+            matched_with_side_condition = _match_clause_with_conjunctive_branch(child, var)
+            if matched_with_side_condition is None:
+                return None
+            escape, equality, side_condition = matched_with_side_condition
+            side_conditions.append(side_condition)
 
-        escape, equality = matched
         matches.append(_Clause_Match(and_child_index=idx, escape=escape, equality=equality))
 
     if len(matches) < 2:
@@ -343,7 +401,9 @@ def _try_eliminate_var(var: Var, node: ASTp_Node) -> Optional[ASTp_Node]:
 
     consumed_indices = {match.and_child_index for match in matches} | set(inequality_indices)
     remaining_and_children = [child for idx, child in enumerate(node.children) if idx not in consumed_indices]
+    remaining_and_children.extend(side_condition for side_condition in side_conditions if side_condition != BoolLiteral(True))
     remaining_and_children.append(resolved_disjunction)
+    remaining_and_children = _flatten_children_of_same_connective(Connective_Type.AND, remaining_and_children)
 
     if len(remaining_and_children) == 1:
         return remaining_and_children[0]

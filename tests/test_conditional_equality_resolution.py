@@ -571,3 +571,81 @@ def test_conjunction_produced_by_an_inner_quantifier_is_flattened_into_the_outer
 
     assert not _has_quantifier(result)
     assert_semantically_equivalent(formula, result, bool_vars=[A, C], int_vars=[X, B, D])
+
+
+# --- Clauses whose equality is in a conjunction: (or alpha (and (x = t) R)) ---------------------
+
+def _eq(var_coef_pairs, rhs: int = 0) -> Relation:
+    return Relation(vars=[var for _, var in var_coef_pairs], coefs=[coef for coef, _ in var_coef_pairs],
+                    rhs=rhs, predicate_symbol='=')
+
+
+def test_equality_in_a_conjunction_is_resolved_and_the_other_conjuncts_are_kept_under_the_escape():
+    # exists x. ((not A or (x = b and d = y)) and (A or (x = y and y = b)))
+    #   ---> (not A or d = y) and (A or y = b) and (not A or A or b = y)
+    formula = dsl._exists((X,), dsl._and(
+        dsl._or(dsl._neg(A), dsl._and(_eq_x_to(B), _eq([(1, D), (-1, Y)]))),
+        dsl._or(A, dsl._and(_eq_x_to(Y), _eq([(1, Y), (-1, B)]))),
+    ))
+    fill_referenced_vars(formula)
+
+    result = resolve_conditional_equalities(formula)
+
+    assert not _has_quantifier(result)
+    assert _eq([(1, D), (-1, Y)]) in [grandchild for child in result.children
+                                     if isinstance(child, AST_Connective) for grandchild in child.children]
+    assert_semantically_equivalent(formula, result, bool_vars=[A], int_vars=[B, D, Y])
+
+
+def test_conjunction_with_a_second_occurrence_of_the_variable_is_left_alone():
+    # The conjunction also bounds x by an inequality, so it is not `(x = t) and R` with R free of x.
+    bound = Relation(vars=[X], coefs=[1], rhs=3, predicate_symbol='<=')
+    formula = dsl._exists((X,), dsl._and(
+        dsl._or(dsl._neg(A), dsl._and(_eq_x_to(B), bound)),
+        dsl._or(A, _eq_x_to(D)),
+    ))
+    fill_referenced_vars(formula)
+
+    result = resolve_conditional_equalities(formula)
+
+    assert isinstance(result, AST_Quantifier) and result.bound_vars == (X,)
+
+
+def test_formula_with_two_levels_of_conjunctive_branches():
+    """
+    NOT exists v209, v211. ((not b49 or (v209 = v81 and v211 = v81))
+                            and (b49 or (v209 = v43 and v211 = v43))
+                            and exists v210. ((not b55 or (v210 = v69 and v69 = v70))
+                                              and (b55 or (v210 = v209 and v209 = v211))))
+
+    v210 is eliminated, giving (not b55 or v69 = v70) and (b55 or v209 = v211); the AND is flattened
+    into the outer body and v209 is eliminated from three clauses. v211 then occurs in the disjunction
+    produced for v209, which is not a clause shape, so its quantifier remains.
+    """
+    b49, b55 = Var(id=49), Var(id=55)
+    v43, v69, v70, v81 = Var(id=43), Var(id=69), Var(id=70), Var(id=81)
+    v209, v210, v211 = Var(id=209), Var(id=210), Var(id=211)
+
+    def equal(left: Var, right: Var) -> Relation:
+        return _eq([(-1, left), (1, right)])
+
+    formula = dsl._neg(dsl._exists((v209, v211), dsl._and(
+        dsl._or(dsl._neg(b49), dsl._and(equal(v81, v209), equal(v81, v211))),
+        dsl._or(b49, dsl._and(equal(v43, v209), equal(v43, v211))),
+        dsl._exists((v210,), dsl._and(
+            dsl._or(dsl._neg(b55), dsl._and(equal(v69, v210), _eq([(1, v69), (-1, v70)]))),
+            dsl._or(b55, dsl._and(equal(v209, v210), _eq([(1, v209), (-1, v211)]))),
+        )),
+    )))
+    fill_referenced_vars(formula)
+
+    result = resolve_conditional_equalities(formula)
+
+    assert isinstance(result, AST_Negation) and isinstance(result.child, AST_Quantifier)
+    assert result.child.bound_vars == (v211,)
+    assert not _has_quantifier(result.child.child)
+    # Equivalent by hand derivation; comparing against it avoids enumerating the three quantified
+    # variables of the original formula.
+    hand_derived_equivalent = dsl._and(b55, dsl._neg(_eq([(1, v69), (-1, v70)])))
+    assert_semantically_equivalent(hand_derived_equivalent, result, bool_vars=[b49, b55],
+                                   int_vars=[v43, v69, v70, v81], int_range=range(-1, 2))
