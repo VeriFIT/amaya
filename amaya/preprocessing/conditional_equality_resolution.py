@@ -484,6 +484,25 @@ def _resolve_conditional_equalities_for_quantifier(bound_vars: Tuple[Var, ...], 
     return current_body, tuple(remaining_vars)
 
 
+def _flatten_children_of_same_connective(connective_type: Connective_Type, children: List[ASTp_Node]) -> List[ASTp_Node]:
+    """
+    Splices the children of every child that is an AND (OR) into an AND (OR). A rewritten child - e.g. a
+    quantifier whose variables were all eliminated - can be a connective of the same type as its parent;
+    `_try_eliminate_var` only inspects the direct conjuncts of a quantifier body, so the conjuncts of such
+    a child would otherwise not be considered.
+    """
+    if connective_type not in (Connective_Type.AND, Connective_Type.OR):
+        return children
+
+    flattened_children: List[ASTp_Node] = []
+    for child in children:
+        if isinstance(child, AST_Connective) and child.type == connective_type:
+            flattened_children.extend(child.children)
+        else:
+            flattened_children.append(child)
+    return flattened_children
+
+
 def resolve_conditional_equalities(root: ASTp_Node) -> ASTp_Node:
     """
     Bottom-up pass eliminating existentially quantified variables that appear only in
@@ -500,8 +519,11 @@ def resolve_conditional_equalities(root: ASTp_Node) -> ASTp_Node:
             return AST_Negation(referenced_vars=_extract_referenced_vars(new_child), child=new_child)
 
         case AST_Connective():
-            new_children = tuple(resolve_conditional_equalities(child) for child in root.children)
-            new_node = root.replace_children(new_children)
+            new_children = _flatten_children_of_same_connective(
+                root.type, [resolve_conditional_equalities(child) for child in root.children])
+            # `replace_children` would copy `root.referenced_vars`, which still lists the eliminated variables.
+            new_node = AST_Connective(referenced_vars=_referenced_vars_of_children(new_children), type=root.type,
+                                      children=tuple(new_children), variable_bounds=root.variable_bounds)
 
             new_node = new_node.simplify_on_anihilators()
             if not isinstance(new_node, AST_Connective):

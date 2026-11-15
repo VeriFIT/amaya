@@ -546,3 +546,28 @@ def test_inequality_resolution_negates_an_escape_containing_a_quantifier():
     original = dsl._exists((X,), dsl._and(*clauses, *inequalities))
     fill_referenced_vars(original)
     assert_semantically_equivalent(original, result, bool_vars=[C], int_vars=[B])
+
+
+def test_conjunction_produced_by_an_inner_quantifier_is_flattened_into_the_outer_body():
+    """
+    exists y. ((not A or y = x) and (A or y = b) and exists w. ((not C or w = d) and (C or w = d) and (C or y = b)))
+
+    Eliminating w turns the inner quantifier into an AND that contains the clause `(C or y = b)`. The
+    clauses on y are direct conjuncts of the outer body only after that AND is spliced into it.
+    """
+    W = Var(id=11)
+    formula = dsl._exists((Y,), dsl._and(
+        dsl._or(dsl._neg(A), _eq_x_to(X, x=Y)),
+        dsl._or(A, _eq_x_to(B, x=Y)),
+        dsl._exists((W,), dsl._and(
+            dsl._or(dsl._neg(C), _eq_x_to(D, x=W)),
+            dsl._or(C, _eq_x_to(D, x=W)),
+            dsl._or(C, _eq_x_to(B, x=Y)),
+        )),
+    ))
+    fill_referenced_vars(formula)
+
+    result = resolve_conditional_equalities(formula)
+
+    assert not _has_quantifier(result)
+    assert_semantically_equivalent(formula, result, bool_vars=[A, C], int_vars=[X, B, D])
