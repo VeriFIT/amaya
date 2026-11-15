@@ -267,6 +267,14 @@ class MTBDD_NFA(NFA):
             A tuple containing the model (word over alphabet) and a list of states that would be traversed or
             None, if the automaton has empty language.
         """
+        # The search runs in C++ (`mtbdd-backend/src/base.cpp:NFA::find_model`), with the exploration
+        # order of `_find_model_in_python`, which is kept as the reference implementation.
+        return self.transition_fn._nfa.find_model(
+            list(self.initial_states), self.final_states,
+            solver_config.solution_domain == SolutionDomain.NATURALS)
+
+    def _find_model_in_python(self) -> Tuple[LSBF_AlphabetSymbol] | None:
+        """ Reference implementation of `find_model`, issuing one backend call per explored state. """
         Word = Tuple[LSBF_AlphabetSymbol, ...]
         states_with_word_to_explore: List[Tuple[int, Word]] = [(q0, tuple()) for q0 in self.initial_states]
         states_to_explore = set(self.initial_states)  # To prevent having the same state waiting to be explored multiple times
