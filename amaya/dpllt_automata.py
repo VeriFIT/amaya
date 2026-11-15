@@ -118,7 +118,7 @@ Classification of the passes admitted besides `linearize` (by reading the pass; 
 | `stomp-negations` | `NOT (a.x <= c)` to `-a.x <= -c - 1`; De Morgan; double negation | equivalence over the integers and the naturals |
 | `var-bounds` | replaces the single-variable bounds of an AND by their intersection | the intersection is implied by the AND it is added to |
 | `interval-analysis` | folds atoms to True/False or tightens them using bounds asserted by ancestor ANDs | the ancestor bounds are conjuncts of the same assertion |
-| `unit-coefficient-fm` | Fourier-Motzkin elimination of a quantified variable with coefficients +1/-1 | exact over the integers; adds `v >= 0` over the naturals |
+| `unit-coefficient-fm` | Fourier-Motzkin elimination of a quantified variable with coefficients +1/-1, using bounds from the body of its quantifier and of one nested existential quantifier; combined atoms are divided by the gcd of their coefficients | exact over the integers; adds `v >= 0` over the naturals; the gcd division is exact for integer-valued variables in both domains |
 | `model-reasoning`, as narrowed by `_restrict_descriptor_to_an_assertion` | substitutes aliases from equations; removes a quantified variable with its defining equation; folds constants; replaces a Bool variable by the value a sibling conjunct asserts; drops a congruence whose period a quantified variable's hard bounds cover | each fact used is a conjunct of the enclosing frame; the congruence rewrite is confined to quantified variables |
 | `flatten-connectives`, `dedup-connective-children` and the `finalize-*` passes | associativity and idempotence of AND/OR; refreshing `referenced_vars` | equivalence |
 
