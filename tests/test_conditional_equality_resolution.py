@@ -570,7 +570,7 @@ def test_conjunction_produced_by_an_inner_quantifier_is_flattened_into_the_outer
     result = resolve_conditional_equalities(formula)
 
     assert not _has_quantifier(result)
-    assert_semantically_equivalent(formula, result, bool_vars=[A, C], int_vars=[X, B, D])
+    assert_semantically_equivalent(formula, result, bool_vars=[A, C], int_vars=[X, B, D], int_range=range(-1, 2))
 
 
 # --- Clauses whose equality is in a conjunction: (or alpha (and (x = t) R)) ---------------------
