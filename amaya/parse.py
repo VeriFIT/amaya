@@ -1056,6 +1056,25 @@ def match_quantified_atom_conjunction(node: ASTp_Node) -> Optional[Quantified_At
     return None
 
 
+def divide_relations_of_conjunction_by_gcd(atoms: Iterable[AST_Atom]) -> Optional[List[AST_Atom]]:
+    """
+    The atoms with every relation divided by the gcd of its coefficients (`divide_relation_by_gcd`), and the
+    relations that become True dropped. None if some relation becomes False.
+    """
+    atoms_divided_by_gcd: List[AST_Atom] = []
+    for atom in atoms:
+        if not isinstance(atom, Relation):
+            atoms_divided_by_gcd.append(atom)
+            continue
+        atom_divided_by_gcd = divide_relation_by_gcd(atom)
+        if isinstance(atom_divided_by_gcd, BoolLiteral):
+            if not atom_divided_by_gcd.value:
+                return None
+            continue
+        atoms_divided_by_gcd.append(atom_divided_by_gcd)
+    return atoms_divided_by_gcd
+
+
 def try_decide_atom_conjunction_with_early_stop(conjunction: Quantified_Atom_Conjunction,
                                                 ctx: EvaluationContext) -> Optional[NFA]:
     """
@@ -1078,17 +1097,9 @@ def try_decide_atom_conjunction_with_early_stop(conjunction: Quantified_Atom_Con
     if len(conjunction_vars) > LAZY_EVALUATION_MAX_VARS:
         return None  # See `select_children_to_lazily_evaluate`
 
-    atoms_divided_by_gcd: List[AST_Atom] = []
-    for atom in conjunction.atoms:
-        if isinstance(atom, Relation):
-            atom_divided_by_gcd = divide_relation_by_gcd(atom)
-            if isinstance(atom_divided_by_gcd, BoolLiteral):
-                if not atom_divided_by_gcd.value:
-                    return ctx.get_automaton_class_for_current_backend().trivial_nonaccepting(ctx.get_alphabet())
-                continue
-            atoms_divided_by_gcd.append(atom_divided_by_gcd)
-        else:
-            atoms_divided_by_gcd.append(atom)
+    atoms_divided_by_gcd = divide_relations_of_conjunction_by_gcd(conjunction.atoms)
+    if atoms_divided_by_gcd is None:
+        return ctx.get_automaton_class_for_current_backend().trivial_nonaccepting(ctx.get_alphabet())
 
     if not atoms_divided_by_gcd:
         return ctx.get_automaton_class_for_current_backend().trivial_accepting(ctx.get_alphabet())
