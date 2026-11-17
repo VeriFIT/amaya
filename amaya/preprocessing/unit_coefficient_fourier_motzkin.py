@@ -42,6 +42,21 @@ Occurrence shapes that abort the rewrite for `v` (the formula is left unchanged 
 
 When the solution domain is the natural numbers, `v >= 0` is added to the lower bounds of `v`.
 
+Guarded bounds (disabled by default; enabled by `allow_guarded_bounds`, set from
+`OptimizationsConfig.eliminate_guarded_bounds_by_fourier_motzkin`). A conjunct may be a clause
+`(or  l_1 ... l_m  atom)` in which `atom` is a bound on `v` of the shape above and every `l_i` is a
+Boolean literal (a Boolean variable or its negation). The clause is the bound `atom` under the guard
+`G = not l_1 and ... and not l_m`. For bounds `L_i <= v` under `G_i` and `v <= U_j` under `H_j`,
+
+    exists v. (and  (G_1 -> L_1 <= v) ...  (H_1 -> v <= U_1) ...  rest)
+      ==  (and  (G_i and H_j -> L_i <= U_j) for every (i, j)   rest)
+
+For a fixed assignment of the Boolean variables, the bounds whose guard holds are unguarded bounds and
+the others are absent, and the unguarded rewrite applies to the bounds present; the pair `(i, j)` is
+present exactly when `G_i and H_j` holds. The combined clause is `(or  l_1 ... l_m  l'_1 ... l'_n
+L_i <= U_j)`; it is dropped if it contains a literal and its negation or if the combined atom folds to
+True. The criterion on the number of atoms is unchanged; a combined clause has up to `m + n` literals.
+
 Every combined atom `sum a_i.x_i <= k` with `g = gcd(a_i) > 1` is replaced by
 `sum (a_i / g).x_i <= floor(k / g)`, which is an equivalence for integer-valued `x_i` (both solution
 domains). The division can give another variable of the same quantifier a unit coefficient, making it
@@ -57,6 +72,7 @@ from typing import Dict, List, Optional, Tuple
 from amaya.preprocessing.conditional_equality_resolution import (
     _extract_referenced_vars,
     _make_and,
+    _make_or,
     _referenced_vars_of_children,
 )
 from amaya.preprocessing.eval import VarInfo
@@ -90,6 +106,11 @@ class Unit_Coefficient_Bound:
     rhs: int
     is_from_nested_quantifier: bool = False
     """ The atom is a conjunct of the body of the nested quantifier (see the module docstring). """
+    guard_literals: Tuple[Tuple[Var, bool], ...] = ()
+    """
+    The Boolean literals of the clause the bound comes from, as (variable, is_positive); the bound holds
+    when all of them are False. Empty for an unguarded bound (see "Guarded bounds" in the module docstring).
+    """
 
 
 @dataclass
@@ -108,19 +129,60 @@ def _coefficient_of_var(relation: Relation, eliminated_var: Var) -> int:
     return relation.coefs[relation.vars.index(eliminated_var)]
 
 
+def _as_boolean_literal(node: ASTp_Node) -> Optional[Tuple[Var, bool]]:
+    """ `node` as (variable, is_positive) if it is a Boolean variable or its negation, None otherwise. """
+    if isinstance(node, Var):
+        return (node, True)
+    if isinstance(node, AST_Negation) and isinstance(node.child, Var):
+        return (node.child, False)
+    return None
+
+
+def _split_guarded_clause(conjunct: ASTp_Node, eliminated_var: Var) -> Optional[Tuple[ASTp_Node, Tuple[Tuple[Var, bool], ...]]]:
+    """
+    For a clause `(or  l_1 ... l_m  atom)` in which only `atom` references `eliminated_var` and every `l_i`
+    is a Boolean literal, return `(atom, (l_1, ..., l_m))`. Returns None for any other shape.
+    """
+    if not (isinstance(conjunct, AST_Connective) and conjunct.type == Connective_Type.OR):
+        return None
+
+    atoms_with_var = [child for child in conjunct.children if _references_var(child, eliminated_var)]
+    if len(atoms_with_var) != 1:
+        return None
+
+    guard_literals = []
+    for child in conjunct.children:
+        if child is atoms_with_var[0]:
+            continue
+        literal = _as_boolean_literal(child)
+        if literal is None:
+            return None
+        guard_literals.append(literal)
+
+    return atoms_with_var[0], tuple(guard_literals)
+
+
 def _classify_conjunct_into_bounds(conjunct: ASTp_Node, eliminated_var: Var, bounds: Bounds_On_Eliminated_Var,
-                                   is_from_nested_quantifier: bool = False) -> bool:
+                                   is_from_nested_quantifier: bool = False, allow_guarded_bounds: bool = False) -> bool:
     """
     Add the bounds on `eliminated_var` expressed by `conjunct` to `bounds`. Returns False if the shape of
     `conjunct` is not admissible (see the module docstring), in which case `bounds` must be discarded.
     """
+    guard_literals: Tuple[Tuple[Var, bool], ...] = ()
+    atom = conjunct
+    if allow_guarded_bounds:
+        guarded_clause = _split_guarded_clause(conjunct, eliminated_var)
+        if guarded_clause is not None:
+            atom, guard_literals = guarded_clause
+
     lower_count_before = len(bounds.lower_bounds)
     upper_count_before = len(bounds.upper_bounds)
-    is_admissible = _classify_conjunct_into_untagged_bounds(conjunct, eliminated_var, bounds)
+    is_admissible = _classify_conjunct_into_untagged_bounds(atom, eliminated_var, bounds)
     if is_admissible:
         added_bounds = bounds.lower_bounds[lower_count_before:] + bounds.upper_bounds[upper_count_before:]
         for bound in added_bounds:
             bound.is_from_nested_quantifier = is_from_nested_quantifier
+            bound.guard_literals = guard_literals
     return is_admissible
 
 
@@ -168,8 +230,27 @@ def _produces_no_more_atoms(bounds: Bounds_On_Eliminated_Var) -> bool:
 def _combine_lower_and_upper_bound(lower_bound: Unit_Coefficient_Bound, upper_bound: Unit_Coefficient_Bound) -> ASTp_Node:
     """
     (-v + T_lower <= k_lower) + (v + T_upper <= k_upper)  =  (T_lower + T_upper <= k_lower + k_upper),
-    divided by the gcd of its coefficients (see the module docstring).
+    divided by the gcd of its coefficients (see the module docstring). If either bound is guarded, the
+    result is the clause of the combined atom and the guard literals of both bounds (True if the clause
+    contains a literal and its negation).
     """
+    combined_atom = _combine_lower_and_upper_bound_atoms(lower_bound, upper_bound)
+
+    guard_literals = list(dict.fromkeys(lower_bound.guard_literals + upper_bound.guard_literals))
+    if not guard_literals:
+        return combined_atom
+
+    guard_literal_set = set(guard_literals)
+    if any((var, not is_positive) in guard_literal_set for var, is_positive in guard_literals):
+        return BoolLiteral(True)
+
+    literal_nodes: List[ASTp_Node] = [
+        var if is_positive else AST_Negation(referenced_vars=(var,), child=var) for var, is_positive in guard_literals
+    ]
+    return _make_or([*literal_nodes, combined_atom])
+
+
+def _combine_lower_and_upper_bound_atoms(lower_bound: Unit_Coefficient_Bound, upper_bound: Unit_Coefficient_Bound) -> ASTp_Node:
     vars_, coefs = _linear_combo(lower_bound.terms, 1, upper_bound.terms, 1)
     rhs = lower_bound.rhs + upper_bound.rhs
     if coefs:
@@ -209,7 +290,8 @@ def _make_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node) -> ASTp_Node:
 
 
 def _try_eliminate_var_by_fourier_motzkin(eliminated_var: Var, body: ASTp_Node, var_table: Dict[Var, VarInfo],
-                                          quantified_vars_are_nonnegative: bool) -> Optional[ASTp_Node]:
+                                          quantified_vars_are_nonnegative: bool,
+                                          allow_guarded_bounds: bool = False) -> Optional[ASTp_Node]:
     """
     Returns the body with `eliminated_var` eliminated, or None if some occurrence of `eliminated_var` is
     not admissible or the rewrite would increase the number of atoms.
@@ -246,11 +328,12 @@ def _try_eliminate_var_by_fourier_motzkin(eliminated_var: Var, body: ASTp_Node, 
                     retained_conjuncts_of_nested_body.append(nested_conjunct)
                     continue
                 if not _classify_conjunct_into_bounds(nested_conjunct, eliminated_var, bounds,
-                                                      is_from_nested_quantifier=True):
+                                                      is_from_nested_quantifier=True,
+                                                      allow_guarded_bounds=allow_guarded_bounds):
                     return None
             continue
 
-        if not _classify_conjunct_into_bounds(conjunct, eliminated_var, bounds):
+        if not _classify_conjunct_into_bounds(conjunct, eliminated_var, bounds, allow_guarded_bounds=allow_guarded_bounds):
             return None
 
     if not _produces_no_more_atoms(bounds):
@@ -267,14 +350,15 @@ def _try_eliminate_var_by_fourier_motzkin(eliminated_var: Var, body: ASTp_Node, 
     if nested_quantifier is not None:
         new_nested_body, remaining_nested_bound_vars = _eliminate_vars_of_quantifier(
             nested_quantifier.bound_vars, _make_and(retained_conjuncts_of_nested_body), var_table,
-            quantified_vars_are_nonnegative)
+            quantified_vars_are_nonnegative, allow_guarded_bounds)
         retained_conjuncts.append(_make_quantifier(remaining_nested_bound_vars, new_nested_body))
 
     return _make_and(retained_conjuncts)
 
 
 def _eliminate_vars_of_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node, var_table: Dict[Var, VarInfo],
-                                  quantified_vars_are_nonnegative: bool) -> Tuple[ASTp_Node, Tuple[Var, ...]]:
+                                  quantified_vars_are_nonnegative: bool,
+                                  allow_guarded_bounds: bool = False) -> Tuple[ASTp_Node, Tuple[Var, ...]]:
     """
     Eliminates bound variables until none of the remaining ones is admissible: eliminating one variable
     can change the coefficients of another (e.g. `-v + w <= 0` and `v - w + u <= 0` combine into `u <= 0`).
@@ -290,7 +374,8 @@ def _eliminate_vars_of_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node, 
                 continue
 
             rewritten_body = _try_eliminate_var_by_fourier_motzkin(var, current_body, var_table,
-                                                                   quantified_vars_are_nonnegative)
+                                                                   quantified_vars_are_nonnegative,
+                                                                   allow_guarded_bounds)
             if rewritten_body is None:
                 continue
 
@@ -304,25 +389,29 @@ def _eliminate_vars_of_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node, 
 
 
 def eliminate_unit_coefficient_vars_by_fourier_motzkin(root: ASTp_Node, var_table: Dict[Var, VarInfo],
-                                                       quantified_vars_are_nonnegative: bool = False) -> ASTp_Node:
+                                                       quantified_vars_are_nonnegative: bool = False,
+                                                       allow_guarded_bounds: bool = False) -> ASTp_Node:
     """
     Bottom-up pass applying unit-coefficient Fourier-Motzkin elimination to every existential quantifier.
     See the module docstring. `quantified_vars_are_nonnegative` is True when the solution domain is the
-    natural numbers.
+    natural numbers. `allow_guarded_bounds` enables bounds in clauses with Boolean literals ("Guarded
+    bounds" in the module docstring).
     """
     match root:
         case Relation() | Congruence() | BoolLiteral() | Var():
             return root
 
         case AST_Negation():
-            new_child = eliminate_unit_coefficient_vars_by_fourier_motzkin(root.child, var_table, quantified_vars_are_nonnegative)
+            new_child = eliminate_unit_coefficient_vars_by_fourier_motzkin(root.child, var_table, quantified_vars_are_nonnegative,
+                                                                           allow_guarded_bounds)
             if isinstance(new_child, BoolLiteral):
                 return BoolLiteral(not new_child.value)
             return AST_Negation(referenced_vars=_extract_referenced_vars(new_child), child=new_child)
 
         case AST_Connective():
             new_children = tuple(
-                eliminate_unit_coefficient_vars_by_fourier_motzkin(child, var_table, quantified_vars_are_nonnegative)
+                eliminate_unit_coefficient_vars_by_fourier_motzkin(child, var_table, quantified_vars_are_nonnegative,
+                                                                   allow_guarded_bounds)
                 for child in root.children
             )
             # `replace_children` copies `root.referenced_vars`, which still lists the variables eliminated below.
@@ -336,9 +425,11 @@ def eliminate_unit_coefficient_vars_by_fourier_motzkin(root: ASTp_Node, var_tabl
             return new_node.remove_idempotent_children()
 
         case AST_Quantifier():
-            new_child = eliminate_unit_coefficient_vars_by_fourier_motzkin(root.child, var_table, quantified_vars_are_nonnegative)
+            new_child = eliminate_unit_coefficient_vars_by_fourier_motzkin(root.child, var_table, quantified_vars_are_nonnegative,
+                                                                           allow_guarded_bounds)
             new_child, remaining_bound_vars = _eliminate_vars_of_quantifier(root.bound_vars, new_child, var_table,
-                                                                           quantified_vars_are_nonnegative)
+                                                                           quantified_vars_are_nonnegative,
+                                                                           allow_guarded_bounds)
 
             return _make_quantifier(remaining_bound_vars, new_child)
 
