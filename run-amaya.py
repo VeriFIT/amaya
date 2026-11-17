@@ -169,6 +169,14 @@ argparser.add_argument('--toplevel-sat-exact-blocking',
                              'on the variables the refuted residual actually depended on. Strictly weaker pruning;\n'
                              'exists to measure what the generalized blocking clauses buy. See SAT_TOP_LEVEL.md.'))
 
+argparser.add_argument('--toplevel-sat-optimize-residuals',
+                       action='store_true',
+                       dest='toplevel_sat_optimize_residuals',
+                       default=False,
+                       help=('(EXPERIMENTAL) Only meaningful together with --use-toplevel-sat: run the formula-level\n'
+                             'optimizations on every residual before evaluating it. A residual whose optimization\n'
+                             'allocates variables is evaluated unoptimized.'))
+
 argparser.add_argument('--use-dpllt-automata',
                        action='store_true',
                        dest='use_dpllt_automata',
@@ -792,7 +800,8 @@ def get_evaluation_strategy():
 
     from amaya.sat_toplevel import evaluate_prepared_formula_with_toplevel_sat
     return functools.partial(evaluate_prepared_formula_with_toplevel_sat,
-                             use_generalized_blocking=not args.toplevel_sat_exact_blocking)
+                             use_generalized_blocking=not args.toplevel_sat_exact_blocking,
+                             optimize_residuals=args.toplevel_sat_optimize_residuals)
 
 def ensure_output_destination_valid(output_destination: str):
     """Ensures that the given output destination is a folder. Creates the folder if it does not exist."""
