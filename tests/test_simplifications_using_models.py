@@ -746,3 +746,104 @@ def test_congruence_over_quantified_var_is_dropped_when_free_vars_may_be_constra
     result = simplify_formula_using_model_properties(formula, assertions)
 
     assert not _contains_congruence(result)
+
+
+def _desired_bool_values_after_scan(formula, bool_vars):
+    var_use_info = Variable_Use_Info()
+    scan_variable_use(formula, var_use_info)
+    return [var_use_info.get_bool_var_desired_value(bool_var) for bool_var in bool_vars]
+
+
+def test_bound_bool_occurring_only_positively_is_fixed_to_true():
+    """`exists b. (b or x - y <= 0)`: `b` occurs only positively in the body, so `b := True`."""
+    b, x, y = Var(1), Var(2), Var(3)
+    formula = dsl._exists((b,), dsl._or(b, _less_or_equal([(1, x), (-1, y)], 0)))
+
+    assert _desired_bool_values_after_scan(formula, [b]) == [True]
+
+
+def test_bound_bool_under_negation_inside_its_binder_is_fixed_to_false():
+    """
+    `exists b. not (b and x - y <= 0)`: the occurrence of `b` is under one negation below its binder,
+    so `b := False`, the conjunction becomes False and the formula True.
+    """
+    b, x, y = Var(1), Var(2), Var(3)
+    formula = dsl._exists((b,), dsl._neg(dsl._and(b, _less_or_equal([(1, x), (-1, y)], 0))))
+
+    var_use_info = Variable_Use_Info()
+    scan_variable_use(formula, var_use_info)
+
+    assert var_use_info.get_bool_var_desired_value(b) is False
+    assert remove_atoms_satisfied_by_unconstrained_vars(formula, var_use_info, desired_polarity=True) == BoolLiteral(True)
+
+
+def test_polarity_is_relative_to_a_binder_under_negation():
+    """
+    `not exists b. (b and x - y <= 0) and (x + y <= 0)` (the binder is universal): `b` occurs positively
+    relative to its binder, so `b := True` and the formula becomes `not (x - y <= 0) and x + y <= 0`.
+    """
+    b, x, y = Var(1), Var(2), Var(3)
+    first_atom = _less_or_equal([(1, x), (-1, y)], 0)
+    second_atom = _less_or_equal([(1, x), (1, y)], 0)
+    formula = dsl._and(dsl._neg(dsl._exists((b,), dsl._and(b, first_atom))), second_atom)
+
+    var_use_info = Variable_Use_Info()
+    scan_variable_use(formula, var_use_info)
+
+    assert var_use_info.get_bool_var_desired_value(b) is True
+    result = remove_atoms_satisfied_by_unconstrained_vars(formula, var_use_info, desired_polarity=True)
+    assert result == dsl._and(dsl._neg(first_atom), second_atom)
+
+
+def test_bound_bool_with_both_polarities_is_not_fixed():
+    b, x, y = Var(1), Var(2), Var(3)
+    formula = dsl._exists((b,), dsl._and(
+        dsl._or(b, _less_or_equal([(1, x), (-1, y)], 0)),
+        dsl._or(dsl._neg(b), _less_or_equal([(1, x), (1, y)], 0)),
+    ))
+
+    assert _desired_bool_values_after_scan(formula, [b]) == [None]
+
+
+def test_free_bool_is_not_fixed():
+    """A free Boolean is part of the reported model, so it is not fixed even if it occurs only positively."""
+    b, x, y = Var(1), Var(2), Var(3)
+    formula = dsl._or(b, _less_or_equal([(1, x), (-1, y)], 0))
+
+    assert _desired_bool_values_after_scan(formula, [b]) == [None]
+
+
+def test_bound_bool_under_equivalence_is_not_fixed():
+    b, c = Var(1), Var(2)
+    formula = dsl._exists((b, c), AST_Connective(referenced_vars=(), type=Connective_Type.EQUIV, children=(b, c)))
+
+    assert _desired_bool_values_after_scan(formula, [b, c]) == [None, None]
+
+
+def test_bool_fixed_in_one_group_leaves_the_other_group_bound():
+    """
+    `exists p, q. not ((p and A) or (not q and B) or (q and C) or (q and B and A))` with integer atoms
+    `A`, `B`, `C` over the free `x`, `y`:
+    `p` occurs only positively under the negation (negative relative to its binder), `q` in both
+    polarities. `p := False` removes its disjunct, `q` stays bound.
+    """
+    p, q, x, y = Var(1), Var(2), Var(3), Var(4)
+    first_atom = _less_or_equal([(1, x), (-1, y)], 0)
+    second_atom = _less_or_equal([(1, x), (1, y)], 0)
+    third_atom = _less_or_equal([(1, x), (-1, y)], 1)
+    formula = dsl._exists((p, q), dsl._neg(dsl._or(
+        dsl._and(p, first_atom),
+        dsl._and(dsl._neg(q), second_atom),
+        dsl._and(q, third_atom),
+        dsl._and(q, second_atom, first_atom),
+    )))
+
+    var_use_info = Variable_Use_Info()
+    scan_variable_use(formula, var_use_info)
+    result = remove_atoms_satisfied_by_unconstrained_vars(formula, var_use_info, desired_polarity=True)
+
+    assert result == dsl._exists((q,), dsl._neg(dsl._or(
+        dsl._and(dsl._neg(q), second_atom),
+        dsl._and(q, third_atom),
+        dsl._and(q, second_atom, first_atom),
+    )))
