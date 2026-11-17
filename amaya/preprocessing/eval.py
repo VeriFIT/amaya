@@ -82,6 +82,11 @@ class VarInfo:
     type: VariableType
     comment: Optional[str] = None
     is_formula_param: bool = False
+    is_lifted_from_toplevel_existential: bool = False
+    """
+    A Boolean variable bound by a positive-position existential quantifier of the input, made free by
+    `amaya/preprocessing/toplevel_bool_existentials.py`. Not a formula parameter; it may be assigned freely.
+    """
 
 
 class NonlinearArithmeticError(ValueError):
