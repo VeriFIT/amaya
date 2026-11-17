@@ -302,6 +302,15 @@ argparser.add_argument('--opt-fixpoint',
                              'See OPTIMIZATION_PIPELINE.md.'))
 
 # Not an -O option, so that `-O all` does not enable it.
+argparser.add_argument('--lift-toplevel-bool-existentials',
+                       action='store_true',
+                       dest='lift_toplevel_bool_existentials',
+                       default=False,
+                       help=('(EXPERIMENTAL) Make the Bool variables of existential quantifiers that occur under no negation\n'
+                             'free variables, so that --use-toplevel-sat can assign them and the pure-literal rule can\n'
+                             'fix them. They are not reported in the model.'))
+
+# Not an -O option, so that `-O all` does not enable it.
 argparser.add_argument('--ucfm-guarded-bounds',
                        action='store_true',
                        dest='ucfm_guarded_bounds',
@@ -702,6 +711,7 @@ else:
         setattr(solver_config.optimizations, opt_to_config_field[opt], False)
 
 solver_config.optimizations.eliminate_guarded_bounds_by_fourier_motzkin = args.ucfm_guarded_bounds
+solver_config.optimizations.lift_toplevel_bool_existentials = args.lift_toplevel_bool_existentials
 
 if args.opt_fixpoint is not None:
     solver_config.optimization_pipeline.enabled = args.opt_fixpoint

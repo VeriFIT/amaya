@@ -44,6 +44,7 @@ from amaya.preprocessing.conditional_equality_resolution import fill_referenced_
 from amaya.preprocessing.connective_child_dedup import remove_duplicit_connective_children
 from amaya.preprocessing.eval import VarInfo, divide_relation_by_gcd
 from amaya.preprocessing.inner_quantifier_squeeze_elimination import eliminate_inner_quantifier_squeezes
+from amaya.preprocessing.toplevel_bool_existentials import lift_bool_vars_of_toplevel_existentials
 from amaya.preprocessing.unit_coefficient_fourier_motzkin import eliminate_unit_coefficient_vars_by_fourier_motzkin
 from amaya.preprocessing.pipeline import Optimization_Pipeline, Pipeline_Report, build_registry
 import amaya.preprocessing.unbound_vars as var_bounds_lib
@@ -165,6 +166,9 @@ def optimize_formula_structure(astp: ASTp_Node, var_table: Dict[Var, VarInfo],
     it runs before `Evaluation_Result` exists, so a sink list is the cheapest way for a caller to
     get the report out without a global or changing the return type (see plan step 8).
     """
+    if solver_config.optimizations.lift_toplevel_bool_existentials:
+        astp = lift_bool_vars_of_toplevel_existentials(astp, var_table)
+
     if not solver_config.optimization_pipeline.enabled:
         return _optimize_formula_structure_legacy(astp, var_table)
 
@@ -252,7 +256,9 @@ def _optimize_formula_structure_legacy(astp: ASTp_Node, var_table: Dict[Var, Var
         astp = simplify_formula_using_model_properties(astp, Asserted_Model_Properties())
 
         var_uses = Variable_Use_Info()
-        scan_variable_use(astp, var_uses)
+        # Free variables lifted from positive-position existentials are not part of the model and may be fixed.
+        lifted_vars = frozenset(var for var, var_info in var_table.items() if var_info.is_lifted_from_toplevel_existential)
+        scan_variable_use(astp, var_uses, free_vars_that_may_be_fixed=lifted_vars)
         astp = remove_atoms_satisfied_by_unconstrained_vars(astp, var_uses, desired_polarity=True)
         astp = remove_atoms_satisfied_by_unconstrained_vars(astp, var_uses, desired_polarity=True)
         astp = remove_atoms_satisfied_by_unconstrained_vars(astp, var_uses, desired_polarity=True)

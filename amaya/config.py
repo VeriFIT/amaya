@@ -167,6 +167,16 @@ class OptimizationsConfig:
         (exists ((v Int)) (and (<= 0 v) (<= v x) (<= y v)))   --->   (and (<= 0 x) (<= y x))
     """
 
+    lift_toplevel_bool_existentials: bool = False
+    """
+    (EXPERIMENTAL) Before the formula-level optimizations, make the Boolean variables of positive-position
+    existential quantifiers free; they are not reported in the model. Not set by `-O all`; enabled by
+    `--lift-toplevel-bool-existentials`. See amaya/preprocessing/toplevel_bool_existentials.py.
+
+    Example:
+        (exists ((b Bool) (x Int)) (and b (<= x 0)))   --->   (and b (exists ((x Int)) (<= x 0)))   with b free
+    """
+
     eliminate_guarded_bounds_by_fourier_motzkin: bool = False
     """
     (EXPERIMENTAL) Let `eliminate_unit_coefficient_vars_by_fourier_motzkin` use bounds that occur in a
