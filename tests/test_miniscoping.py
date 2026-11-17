@@ -5,7 +5,8 @@
 from amaya import dsl
 from amaya.preprocessing.antiprenexing import miniscope_quantifiers
 from amaya.preprocessing.conditional_equality_resolution import fill_referenced_vars
-from amaya.relations_structures import AST_Connective, AST_Quantifier, Connective_Type, Relation, Var
+from amaya.preprocessing.eval import VarInfo, VariableType
+from amaya.relations_structures import AST_Connective, AST_Negation, AST_Quantifier, Connective_Type, Relation, Var
 
 
 def _le(var_coef_pairs, rhs: int) -> Relation:
@@ -23,6 +24,8 @@ def _strip_referenced_vars(node):
     match node:
         case AST_Quantifier():
             return dsl._exists(node.bound_vars, _strip_referenced_vars(node.child))
+        case AST_Negation():
+            return dsl._neg(_strip_referenced_vars(node.child))
         case AST_Connective():
             return AST_Connective(referenced_vars=(), type=node.type,
                                   children=tuple(_strip_referenced_vars(child) for child in node.children))
@@ -89,3 +92,39 @@ def test_quantifier_under_negation_is_distributed_over_the_disjunction_below_it(
 
     assert result.child.type == Connective_Type.OR
     assert all(isinstance(child, AST_Quantifier) and child.bound_vars == (x,) for child in result.child.children)
+
+
+def test_quantifier_below_a_negated_quantifier_body_is_miniscoped():
+    """`∃s. ¬∃x. (x <= s ∨ x >= s + 5)`: the inner quantifier is reached through the outer one's negation."""
+    x, s = Var(1), Var(2)
+    first_disjunct = _le([(1, x), (-1, s)], 0)
+    second_disjunct = _le([(-1, x), (1, s)], -5)
+    formula = dsl._exists((s,), dsl._neg(dsl._exists((x,), dsl._or(first_disjunct, second_disjunct))))
+
+    result = _strip_referenced_vars(_miniscope(formula))
+
+    assert result == dsl._exists((s,), dsl._neg(dsl._or(dsl._exists((x,), first_disjunct),
+                                                        dsl._exists((x,), second_disjunct))))
+
+
+def test_copies_of_a_distributed_variable_are_renamed_apart_when_a_var_table_is_given():
+    """
+    `∃x. (x <= s ∨ ∃y. (x + y <= s ∧ y <= 0))`: the first disjunct keeps `x`, the second binds a fresh
+    copy recorded in the variable table, so no `Var` id is bound twice. The copy is then miniscoped into
+    the conjunct referencing it.
+    """
+    x, y, s = Var(1), Var(2), Var(3)
+    var_table = {var: VarInfo(name=name, type=VariableType.INT) for var, name in ((x, 'x'), (y, 'y'), (s, 's'))}
+    first_disjunct = _le([(1, x), (-1, s)], 0)
+    second_disjunct = dsl._exists((y,), dsl._and(_le([(1, x), (1, y), (-1, s)], 0), _le([(1, y)], 0)))
+    formula = dsl._exists((x,), dsl._or(first_disjunct, second_disjunct))
+
+    fill_referenced_vars(formula)
+    result = _strip_referenced_vars(miniscope_quantifiers(formula, var_table))
+
+    fresh_x = Var(4)
+    assert var_table[fresh_x].type == VariableType.INT and not var_table[fresh_x].is_formula_param
+    assert result == dsl._or(
+        dsl._exists((x,), first_disjunct),
+        dsl._exists((y,), dsl._and(_le([(1, y)], 0), dsl._exists((fresh_x,), _le([(1, y), (-1, s), (1, fresh_x)], 0)))),
+    )
