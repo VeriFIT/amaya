@@ -203,6 +203,15 @@ class Bool_Skeleton:
             if solver_var_id in value_of_solver_var
         }
 
+    def describe_blocking_clause(self, blocking_clause: List[int]) -> List[str]:
+        """ The literals of `blocking_clause` as `v<id>` / `not v<id>`, for logging. """
+        free_bool_var_of_solver_var = {solver_var_id: var for var, solver_var_id in self.solver_var_id_of_free_bool_var.items()}
+        return [
+            (f'v{free_bool_var_of_solver_var[abs(literal)].id}' if literal > 0
+             else f'not v{free_bool_var_of_solver_var[abs(literal)].id}')
+            for literal in blocking_clause
+        ]
+
     def make_blocking_clause(self,
                              assignment: Dict[Var, bool],
                              restrict_to_vars: Optional[FrozenSet[Var]] = None) -> List[int]:
@@ -728,6 +737,9 @@ def solve_with_toplevel_sat(root: ASTp_Node,
                     bool_assignment, restrict_to_vars=relevant_vars if use_generalized_blocking else None)
                 blocked_literal_count += len(blocking_clause)
                 exactly_blocked_literal_count += len(bool_assignment)
+                logger.debug('Top-level SAT: iteration %d refuted, blocking clause has %d of %d assigned literals: %s',
+                             iteration_count, len(blocking_clause), len(bool_assignment),
+                             sorted(skeleton.describe_blocking_clause(blocking_clause)))
 
                 if not blocking_clause:
                     # No assigned var mattered, so the residual just refuted *is* the whole formula's
