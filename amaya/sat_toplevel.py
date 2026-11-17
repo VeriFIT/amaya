@@ -599,6 +599,32 @@ def _make_unsat_evaluation_result(ctx: EvaluationContext) -> Evaluation_Result:
     return Evaluation_Result(run_stats=ctx.stats, solutions_nfa=None, model=None, var_table=ctx.var_table)
 
 
+def _optimize_residual(residual: ASTp_Node, ctx: EvaluationContext) -> ASTp_Node:
+    """
+    Run the formula-level optimizations (`parse.optimize_formula_structure`) on a residual.
+
+    A substituted assignment turns every clause guarded by an assigned Bool variable into an unguarded
+    atom or True, so passes that did not apply to the input formula apply to the residual (e.g.
+    `unit-coefficient-fm` eliminating the quantified variables of the unguarded bounds). The passes
+    preserve satisfiability, the property the optimizations of the input formula provide as well.
+
+    The residual is evaluated with the alphabet of the run, which the automaton cache shared by the
+    iterations depends on. A pass that allocates variables (e.g. `miniscope` renaming copies of a
+    distributed variable) would need tracks not in that alphabet; if the variable table grows, the
+    optimized residual is discarded and the residual is returned unchanged.
+    """
+    var_count_before = len(ctx.var_table)
+    optimized_residual = parse.optimize_formula_structure(residual, ctx.var_table)
+    if len(ctx.var_table) != var_count_before:
+        allocated_vars = list(ctx.var_table)[var_count_before:]
+        for allocated_var in allocated_vars:
+            del ctx.var_table[allocated_var]
+        logger.debug('Top-level SAT: residual optimization allocated %d variables; using the residual unoptimized.',
+                     len(allocated_vars))
+        return residual
+    return optimized_residual
+
+
 def _solve_residual_with_automata(residual: ASTp_Node, ctx: EvaluationContext):
     """
     Evaluate a residual formula with the ordinary automata engine.
@@ -621,7 +647,8 @@ def _solve_residual_with_automata(residual: ASTp_Node, ctx: EvaluationContext):
 
 def solve_with_toplevel_sat(root: ASTp_Node,
                             ctx: EvaluationContext,
-                            use_generalized_blocking: bool = True) -> Evaluation_Result:
+                            use_generalized_blocking: bool = True,
+                            optimize_residuals: bool = False) -> Evaluation_Result:
     """
     Decide `root` by enumerating assignments of its free Bool vars with a SAT solver and handing the
     residual formulae to the automata engine. See the module docstring for the correctness argument.
@@ -681,10 +708,21 @@ def solve_with_toplevel_sat(root: ASTp_Node,
                     if residual.value:
                         return _make_sat_evaluation_result(ctx, bool_assignment, binary_model=None)
                 else:
-                    nfa = _solve_residual_with_automata(residual, ctx)
-                    binary_model = nfa.find_model()
-                    if binary_model is not None:  # An empty model is a *satisfiable* one - not falsy-testable
-                        return _make_sat_evaluation_result(ctx, bool_assignment, binary_model, solutions_nfa=nfa)
+                    residual_to_evaluate = residual
+                    if optimize_residuals:
+                        optimized_residual = _optimize_residual(residual, ctx)
+                        if optimized_residual == BoolLiteral(False):
+                            residual_to_evaluate = None  # refuted without a theory call
+                        elif optimized_residual != BoolLiteral(True):
+                            residual_to_evaluate = optimized_residual
+                        # An optimized residual equal to True proves satisfiability only: the passes preserve
+                        # satisfiability, not the solutions, so the model is read from the unoptimized residual.
+
+                    if residual_to_evaluate is not None:
+                        nfa = _solve_residual_with_automata(residual_to_evaluate, ctx)
+                        binary_model = nfa.find_model()
+                        if binary_model is not None:  # An empty model is a *satisfiable* one - not falsy-testable
+                            return _make_sat_evaluation_result(ctx, bool_assignment, binary_model, solutions_nfa=nfa)
 
                 blocking_clause = skeleton.make_blocking_clause(
                     bool_assignment, restrict_to_vars=relevant_vars if use_generalized_blocking else None)
@@ -713,7 +751,8 @@ def solve_with_toplevel_sat(root: ASTp_Node,
 
 def evaluate_prepared_formula_with_toplevel_sat(astp: ASTp_Node,
                                                 ctx: EvaluationContext,
-                                                use_generalized_blocking: bool = True) -> Evaluation_Result:
+                                                use_generalized_blocking: bool = True,
+                                                optimize_residuals: bool = False) -> Evaluation_Result:
     """
     Evaluation strategy plugging `solve_with_toplevel_sat` into `perform_whole_evaluation_on_source_text`.
 
@@ -731,7 +770,8 @@ def evaluate_prepared_formula_with_toplevel_sat(astp: ASTp_Node,
                        solver_config.backend_type.name)
 
     with cse_enabled():
-        return solve_with_toplevel_sat(astp, ctx, use_generalized_blocking=use_generalized_blocking)
+        return solve_with_toplevel_sat(astp, ctx, use_generalized_blocking=use_generalized_blocking,
+                                       optimize_residuals=optimize_residuals)
 
 
 def perform_whole_evaluation_on_source_text_with_toplevel_sat(source_text: str, emit_introspect=None) -> Optional[Evaluation_Result]:
