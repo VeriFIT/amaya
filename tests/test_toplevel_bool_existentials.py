@@ -128,3 +128,55 @@ def test_skeleton_contains_a_lifted_variable_that_occurs_only_below_a_quantifier
 
         assert set(skeleton.free_bool_var_atoms) == {B}
         assert B in skeleton.solver_var_id_of_free_bool_var
+
+
+def _with_optimizations(**enabled_optimizations):
+    import contextlib
+    from amaya.config import solver_config
+
+    @contextlib.contextmanager
+    def manager():
+        saved_values = {name: getattr(solver_config.optimizations, name) for name in enabled_optimizations}
+        for name, value in enabled_optimizations.items():
+            setattr(solver_config.optimizations, name, value)
+        try:
+            yield
+        finally:
+            for name, value in saved_values.items():
+                setattr(solver_config.optimizations, name, value)
+    return manager()
+
+
+def test_residual_optimization_eliminates_a_quantified_variable_of_unguarded_bounds():
+    """ The residual `exists x. (y <= x and x <= 3)` becomes `y <= 3` by unit-coefficient FM. """
+    from types import SimpleNamespace
+    from amaya.sat_toplevel import _optimize_residual
+
+    var_table = _var_table()
+    residual = dsl._exists((X,), dsl._and(_le([(-1, X), (1, Y)], 0), _le([(1, X)], 3)))
+    fill_referenced_vars(residual)
+
+    with _with_optimizations(eliminate_unit_coefficient_vars_by_fourier_motzkin=True):
+        result = _optimize_residual(residual, SimpleNamespace(var_table=var_table))
+
+    assert _strip_referenced_vars(result) == _le([(1, Y)], 3)
+
+
+def test_residual_optimization_allocating_variables_is_discarded():
+    """
+    Miniscoping `exists x. (x <= y or x >= y + 5)` binds a fresh copy of `x` in the second disjunct; the
+    copy is not in the alphabet of the run, so the residual is returned unchanged and the copy removed.
+    """
+    from types import SimpleNamespace
+    from amaya.sat_toplevel import _optimize_residual
+
+    var_table = _var_table()
+    residual = dsl._exists((X,), dsl._or(_le([(1, X), (-1, Y)], 0), _le([(-1, X), (1, Y)], -5)))
+    fill_referenced_vars(residual)
+    var_table_before = dict(var_table)
+
+    with _with_optimizations(do_miniscoping=True):
+        result = _optimize_residual(residual, SimpleNamespace(var_table=var_table))
+
+    assert result is residual
+    assert var_table == var_table_before
