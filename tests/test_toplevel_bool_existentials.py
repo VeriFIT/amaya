@@ -109,3 +109,22 @@ def test_pure_literal_rule_fixes_a_lifted_variable_but_not_another_free_variable
     assert var_use_info.get_bool_var_desired_value(B) is False
     assert var_use_info.get_bool_var_desired_value(C) is None
     assert _strip_referenced_vars(result) == dsl._or(C, _le([(-1, Y)], -5))
+
+
+def test_skeleton_contains_a_lifted_variable_that_occurs_only_below_a_quantifier():
+    """
+    `exists x. (b and x <= y)` with `b` lifted: the quantifier is one opaque atom of the abstraction, and
+    `b` is added to it as an unconstrained variable that the SAT loop assigns.
+    """
+    from types import SimpleNamespace
+    from amaya.sat_toplevel import extract_bool_skeleton, isolated_sat_formula_context
+
+    var_table = _var_table()
+    formula = lift_bool_vars_of_toplevel_existentials(
+        dsl._exists((B, X), dsl._and(B, _le([(1, X), (-1, Y)], 0))), var_table)
+
+    with isolated_sat_formula_context():
+        skeleton = extract_bool_skeleton(formula, SimpleNamespace(var_table=var_table))
+
+        assert set(skeleton.free_bool_var_atoms) == {B}
+        assert B in skeleton.solver_var_id_of_free_bool_var
