@@ -336,3 +336,119 @@ def test_bool_variable_is_not_eliminated():
     result = eliminate_unit_coefficient_vars_by_fourier_motzkin(formula, var_table)
 
     assert result == formula
+
+
+B, D, E = Var(11), Var(12), Var(13)
+
+
+def _var_table_with_bools(int_vars, bool_vars) -> dict:
+    var_table = _var_table(*int_vars)
+    var_table.update({var: VarInfo(name=f'b{var.id}', type=VariableType.BOOL) for var in bool_vars})
+    return var_table
+
+
+def _eliminate_with_guarded_bounds(formula, int_vars, bool_vars, allow_guarded_bounds=True):
+    fill_referenced_vars(formula)
+    return eliminate_unit_coefficient_vars_by_fourier_motzkin(formula, _var_table_with_bools(int_vars, bool_vars),
+                                                              allow_guarded_bounds=allow_guarded_bounds)
+
+
+def test_guarded_bounds_combine_into_a_clause_with_the_literals_of_both():
+    # exists v. ((not b or x <= v) and (not d or v <= y))   --->   (not b or not d or x - y <= 0)
+    formula = dsl._exists((V,), dsl._and(
+        dsl._or(dsl._neg(B), _le([(-1, V), (1, X)], 0)),
+        dsl._or(dsl._neg(D), _le([(1, V), (-1, Y)], 0)),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [B, D])
+
+    expected = dsl._or(dsl._neg(B), dsl._neg(D), _le([(1, X), (-1, Y)], 0))
+    fill_referenced_vars(expected)
+    assert result == expected
+    assert_semantically_equivalent(formula, result, bool_vars=[B, D], int_vars=[X, Y])
+
+
+def test_guarded_bounds_are_left_unchanged_without_the_flag():
+    formula = dsl._exists((V,), dsl._and(
+        dsl._or(dsl._neg(B), _le([(-1, V), (1, X)], 0)),
+        dsl._or(dsl._neg(D), _le([(1, V), (-1, Y)], 0)),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [B, D], allow_guarded_bounds=False)
+
+    assert result == formula
+
+
+def test_guarded_and_unguarded_bounds_with_a_positive_literal_and_a_constant_result():
+    # exists v. (v >= 2  and  (b or v <= 0)  and  (not d or v <= x))
+    #   --->   (b or 2 <= 0)  and  (not d or 2 <= x)  ==  b and (not d or x >= 2)
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], -2),
+        dsl._or(B, _le([(1, V)], 0)),
+        dsl._or(dsl._neg(D), _le([(1, V), (-1, X)], 0)),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, V], [B, D])
+
+    expected = dsl._and(B, dsl._or(dsl._neg(D), _le([(-1, X)], -2)))
+    fill_referenced_vars(expected)
+    assert result == expected
+    assert_semantically_equivalent(formula, result, bool_vars=[B, D], int_vars=[X])
+
+
+def test_pair_with_complementary_guards_is_dropped():
+    # exists v. ((not b or x <= v) and (b or v <= y))   --->   True: the two bounds are never both present
+    formula = dsl._exists((V,), dsl._and(
+        dsl._or(dsl._neg(B), _le([(-1, V), (1, X)], 0)),
+        dsl._or(B, _le([(1, V), (-1, Y)], 0)),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [B])
+
+    assert result == BoolLiteral(True)
+    assert_semantically_equivalent(formula, result, bool_vars=[B], int_vars=[X, Y])
+
+
+def test_guarded_equation_contributes_two_guarded_bounds():
+    # exists v. ((not b or v = x + 1) and (not d or v <= y))   --->   (not b or not d or x - y <= -1)
+    formula = dsl._exists((V,), dsl._and(
+        dsl._or(dsl._neg(B), dsl._eq([(1, V), (-1, X)], 1)),
+        dsl._or(dsl._neg(D), _le([(1, V), (-1, Y)], 0)),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [B, D])
+
+    assert_semantically_equivalent(formula, result, bool_vars=[B, D], int_vars=[X, Y])
+    assert not any(var == V for var in result.referenced_vars)
+
+
+def test_clause_with_a_non_literal_disjunct_is_left_unchanged():
+    # (x <= 0 or v <= y) is not a guarded bound: its other disjunct is not a Boolean literal
+    formula = dsl._exists((V,), dsl._and(
+        dsl._or(_le([(1, X)], 0), _le([(1, V), (-1, Y)], 0)),
+        _le([(-1, V)], 0),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [])
+
+    assert result == formula
+
+
+def test_guarded_bounds_in_a_nested_quantifier_eliminate_both_variables():
+    """
+    exists w. ((not b or y <= w) and (not d or w <= x) and exists v. ((not e or w <= v) and v <= y - 1)),
+    the shape of a two-level block of guarded bounds: both quantifiers are eliminated.
+    """
+    formula = dsl._exists((W,), dsl._and(
+        dsl._or(dsl._neg(B), _le([(-1, W), (1, Y)], 0)),
+        dsl._or(dsl._neg(D), _le([(1, W), (-1, X)], 0)),
+        dsl._exists((V,), dsl._and(
+            dsl._or(dsl._neg(E), _le([(1, W), (-1, V)], 0)),
+            _le([(1, V), (-1, Y)], -1),
+        )),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V, W], [B, D, E])
+
+    assert not any(var in (V, W) for var in result.referenced_vars)
+    assert_semantically_equivalent(formula, result, bool_vars=[B, D, E], int_vars=[X, Y])
