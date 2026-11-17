@@ -452,3 +452,44 @@ def test_guarded_bounds_in_a_nested_quantifier_eliminate_both_variables():
 
     assert not any(var in (V, W) for var in result.referenced_vars)
     assert_semantically_equivalent(formula, result, bool_vars=[B, D, E], int_vars=[X, Y])
+
+
+def _three_lower_two_upper_guarded_bounds():
+    return [
+        _le([(-1, V)], -2),
+        dsl._or(dsl._neg(B), _le([(-1, V), (1, X)], 0)),
+        dsl._or(dsl._neg(D), _le([(-1, V), (1, Y)], 0)),
+        dsl._or(dsl._neg(E), _le([(1, V), (-1, X)], 3)),
+        _le([(1, V), (-1, Y)], 4),
+    ]
+
+
+def test_one_additional_atom_is_admitted_when_the_last_variable_of_a_quantifier_is_eliminated():
+    # 3 lower and 2 upper bounds: 6 combined atoms replace 5
+    formula = dsl._exists((V,), dsl._and(*_three_lower_two_upper_guarded_bounds()))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [B, D, E])
+
+    assert not any(var == V for var in result.referenced_vars)
+    assert_semantically_equivalent(formula, result, bool_vars=[B, D, E], int_vars=[X, Y])
+
+
+def test_additional_atom_is_not_admitted_when_the_quantifier_keeps_another_variable():
+    # `W` has coefficient 2 in both of its atoms and stays bound, so eliminating `V` would not remove the quantifier
+    formula = dsl._exists((V, W), dsl._and(*_three_lower_two_upper_guarded_bounds(),
+                                           _le([(2, W), (1, X)], 0), _le([(-2, W), (1, Y)], 0)))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V, W], [B, D, E])
+
+    assert V in result.bound_vars
+
+
+def test_additional_atom_is_not_admitted_without_guarded_bounds():
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], -2), _le([(-1, V), (1, X)], 0), _le([(-1, V), (1, Y)], 0),
+        _le([(1, V), (-1, X)], 3), _le([(1, V), (-1, Y)], 4),
+    ))
+
+    result = _eliminate_with_guarded_bounds(formula, [X, Y, V], [], allow_guarded_bounds=False)
+
+    assert result == formula
