@@ -122,7 +122,9 @@ def _pass_unconstrained_vars(ast: ASTp_Node, ctx: Pass_Context) -> ASTp_Node:
     # instead of being computed once and consulted by three calls against a formula that has
     # since changed underneath it.
     var_uses = Variable_Use_Info()
-    scan_variable_use(ast, var_uses)
+    # Free variables lifted from positive-position existentials are not part of the model and may be fixed.
+    lifted_vars = frozenset(var for var, var_info in ctx.var_table.items() if var_info.is_lifted_from_toplevel_existential)
+    scan_variable_use(ast, var_uses, free_vars_that_may_be_fixed=lifted_vars)
     return remove_atoms_satisfied_by_unconstrained_vars(ast, var_uses, desired_polarity=True)
 
 

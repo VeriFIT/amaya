@@ -101,11 +101,14 @@ def isolated_sat_formula_context() -> Generator[str, None, None]:
 # ---------------------------------------------------------------------------------------------
 
 def is_assignable_free_bool_var(var: Var, var_table: Dict[Var, VarInfo]) -> bool:
-    """ Whether `var` is a Bool-typed parameter of the whole formula, i.e. one the SAT layer may assign. """
+    """
+    Whether `var` is a free Bool variable the SAT layer may assign: a parameter of the whole formula, or a
+    variable of a positive-position existential made free by `toplevel_bool_existentials.py`.
+    """
     var_info = var_table.get(var)
     if var_info is None:
         return False
-    return var_info.type == VariableType.BOOL and var_info.is_formula_param
+    return var_info.type == VariableType.BOOL and (var_info.is_formula_param or var_info.is_lifted_from_toplevel_existential)
 
 
 def abstract_to_sat_formula(node: ASTp_Node,

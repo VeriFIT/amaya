@@ -869,7 +869,8 @@ class Variable_Use_Info:
         
 
 def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info, _polarity: bool | None = True,
-                      _binder_polarity_of_bound_var: dict[Var, bool] | None = None):
+                      _binder_polarity_of_bound_var: dict[Var, bool] | None = None,
+                      free_vars_that_may_be_fixed: frozenset[Var] = frozenset()):
     """
     Record the occurrences of every variable of `root_node` into `var_use`.
 
@@ -880,7 +881,10 @@ def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info, _polarit
     can itself be under a negation (a universal quantifier); the relative polarity covers this case.
 
     Occurrences of a free variable are recorded as both positive and negative, so a free variable is
-    never fixed: its value is part of the model reported to the user.
+    never fixed: its value is part of the model reported to the user. A free variable in
+    `free_vars_that_may_be_fixed` (a variable lifted from a positive-position existential, see
+    `toplevel_bool_existentials.py`) is not part of the model and is treated as bound by an existential
+    quantifier at the root.
 
     Children of an `EQUIV` connective occur in both polarities.
 
@@ -889,7 +893,10 @@ def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info, _polarit
     :param _binder_polarity_of_bound_var: Internal (recursion only). Maps each variable bound by an
                                           enclosing quantifier to the polarity of that quantifier.
     """
-    binder_polarity_of_bound_var = _binder_polarity_of_bound_var if _binder_polarity_of_bound_var is not None else {}
+    if _binder_polarity_of_bound_var is None:
+        binder_polarity_of_bound_var = {var: True for var in free_vars_that_may_be_fixed}
+    else:
+        binder_polarity_of_bound_var = _binder_polarity_of_bound_var
 
     match root_node:
         case Var():
