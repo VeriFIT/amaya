@@ -25,8 +25,10 @@ from amaya.config import (
     solver_config,
     SolutionDomain
 )
+from amaya import libamaya
 from amaya.mtbdd_transitions import (
     MTBDDTransitionFn,
+    _snapshot_pynfa,
 )
 from amaya.relations_structures import Var
 from amaya.visualization import AutomatonVisRepresentation
@@ -127,6 +129,41 @@ class MTBDD_NFA(NFA):
         self.used_variables = sorted(renaming.get(var, var) for var in self.used_variables)
 
     def union(self, other: MTBDD_NFA) -> MTBDD_NFA:
+        """
+        Modify this automaton to accept the union of its language and the language of `other`; returns `self`.
+
+        Computed by the backend (`mtbdd-backend/src/base.cpp:compute_nfa_union`). The states of `self` are
+        renumbered to 0..n-1 and those of `other` to n..n+m-1, both in ascending order of their original
+        numbers. `other` is not modified.
+        """
+        assert self.transition_fn.alphabet_variables == other.transition_fn.alphabet_variables, \
+            'MTBBDs require to have the same set of variables.'
+        logger.debug('Entering MTBDD NFA union procedure.')
+
+        union_pynfa = libamaya.compute_nfa_union(_snapshot_pynfa(self), _snapshot_pynfa(other))
+
+        next_state_number = 0
+        for operand in (self, other):
+            for original_state in sorted(operand.states):  # the backend's order; `State` is a signed 64-bit int
+                if operand._debug_state_rename is not None:
+                    operand._debug_state_rename(id(operand), original_state, next_state_number)
+                next_state_number += 1
+
+        self.transition_fn._nfa = union_pynfa
+        self.states = set(union_pynfa.states)
+        self.initial_states = set(union_pynfa.initial_states)
+        self.final_states = set(union_pynfa.final_states)
+
+        self.applied_operations_info += ['union']
+        self.used_variables = sorted(set(self.used_variables + other.used_variables))
+
+        self.automaton_type = AutomatonType.NFA
+
+        logger.debug('Exiting MTBDD NFA union procedure.')
+        return self
+
+    def _union_in_python(self, other: MTBDD_NFA) -> MTBDD_NFA:
+        """ The implementation replaced by `union`; kept as the reference for its tests. Modifies `other`. """
         logger.debug('Entering MTBDD NFA union procedure.')
         first_unreached_state = self.renumber_states(start_from=0)
 
