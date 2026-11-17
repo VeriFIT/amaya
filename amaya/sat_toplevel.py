@@ -120,7 +120,8 @@ def abstract_to_sat_formula(node: ASTp_Node,
     subformula becomes an opaque atom the SAT solver may set either way.
 
     Atoms standing for free Bool `Var`s are recorded into `free_bool_var_atoms` - those, and only
-    those, are the variables the SAT layer assigns and later substitutes into the formula. Bound Bool
+    those, are the variables the SAT layer assigns and later substitutes into the formula.
+    `extract_bool_skeleton` adds the free Bool vars that occur only below a quantifier. Bound Bool
     vars still become atoms (the abstraction must model them) but are never assigned.
 
     This is a superset of `amaya.sat.convert_to_sat_formula`, which handles neither `Congruence`,
@@ -226,12 +227,47 @@ class Bool_Skeleton:
         ]
 
 
+def _collect_free_bool_vars_below_quantifiers(node: ASTp_Node, var_table: Dict[Var, VarInfo]) -> Set[Var]:
+    """ The assignable free Bool vars (`is_assignable_free_bool_var`) occurring anywhere below a quantifier of `node`. """
+    collected: Set[Var] = set()
+
+    def collect(subtree: ASTp_Node, is_below_quantifier: bool):
+        match subtree:
+            case Var():
+                if is_below_quantifier and is_assignable_free_bool_var(subtree, var_table):
+                    collected.add(subtree)
+            case AST_Connective():
+                for child in subtree.children:
+                    collect(child, is_below_quantifier)
+            case AST_Negation():
+                collect(subtree.child, is_below_quantifier)
+            case AST_Quantifier():
+                collect(subtree.child, True)
+
+    collect(node, False)
+    return collected
+
+
 def extract_bool_skeleton(root: ASTp_Node, ctx: EvaluationContext) -> Bool_Skeleton:
     """ Abstract `root` into a SAT formula. Must be called inside `isolated_sat_formula_context`. """
     abstraction_manager = Theory_Abstraction_Manager()
     free_bool_var_atoms: Dict[Var, pysat.formula.Atom] = {}
 
     sat_formula = abstract_to_sat_formula(root, ctx.var_table, abstraction_manager, free_bool_var_atoms)
+
+    # A free Bool var occurring only inside an opaque atom (below a quantifier) is not in the abstraction.
+    # It is added as an unconstrained variable, `atom or not atom`: the abstraction stays a relaxation, and
+    # the substitution of an assignment reaches below quantifiers (`_substitute_bool_vars_tracking_relevance`).
+    vars_only_below_opaque_atoms = sorted(
+        var for var in _collect_free_bool_vars_below_quantifiers(root, ctx.var_table) if var not in free_bool_var_atoms
+    )
+    if vars_only_below_opaque_atoms:
+        unconstrained_var_formulae = []
+        for var in vars_only_below_opaque_atoms:
+            atom = pysat.formula.Atom(make_atom_name_for_bool_var(var))
+            free_bool_var_atoms[var] = atom
+            unconstrained_var_formulae.append(pysat.formula.Or(atom, pysat.formula.Neg(atom)))
+        sat_formula = pysat.formula.And(sat_formula, *unconstrained_var_formulae)
 
     skeleton = Bool_Skeleton(sat_formula=sat_formula,
                              abstraction_manager=abstraction_manager,
