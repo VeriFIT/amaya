@@ -141,7 +141,9 @@ def _pass_squeeze_elimination(ast: ASTp_Node, ctx: Pass_Context) -> ASTp_Node:
 
 def _pass_unit_coefficient_fourier_motzkin(ast: ASTp_Node, ctx: Pass_Context) -> ASTp_Node:
     quantified_vars_are_nonnegative = global_solver_config.solution_domain == SolutionDomain.NATURALS
-    return eliminate_unit_coefficient_vars_by_fourier_motzkin(ast, ctx.var_table, quantified_vars_are_nonnegative)
+    allow_guarded_bounds = global_solver_config.optimizations.eliminate_guarded_bounds_by_fourier_motzkin
+    return eliminate_unit_coefficient_vars_by_fourier_motzkin(ast, ctx.var_table, quantified_vars_are_nonnegative,
+                                                              allow_guarded_bounds)
 
 
 def _pass_fill_referenced_vars(ast: ASTp_Node, ctx: Pass_Context) -> ASTp_Node:

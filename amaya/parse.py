@@ -306,7 +306,9 @@ def _optimize_formula_structure_legacy(astp: ASTp_Node, var_table: Dict[Var, Var
     if solver_config.optimizations.eliminate_unit_coefficient_vars_by_fourier_motzkin:
         logger.debug('Eliminating unit-coefficient variables by Fourier-Motzkin:  %s', astp)
         quantified_vars_are_nonnegative = solver_config.solution_domain == SolutionDomain.NATURALS
-        astp = eliminate_unit_coefficient_vars_by_fourier_motzkin(astp, var_table, quantified_vars_are_nonnegative)
+        allow_guarded_bounds = solver_config.optimizations.eliminate_guarded_bounds_by_fourier_motzkin
+        astp = eliminate_unit_coefficient_vars_by_fourier_motzkin(astp, var_table, quantified_vars_are_nonnegative,
+                                                                  allow_guarded_bounds)
         logger.debug('Unit-coefficient variables eliminated. Result:  %s', astp)
 
     if solver_config.optimizations.deduplicate_connective_children:

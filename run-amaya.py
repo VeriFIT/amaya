@@ -301,6 +301,15 @@ argparser.add_argument('--opt-fixpoint',
                              'amaya/preprocessing/pipeline.py, instead of the legacy fixed hand-unrolled sequence.\n'
                              'See OPTIMIZATION_PIPELINE.md.'))
 
+# Not an -O option, so that `-O all` does not enable it.
+argparser.add_argument('--ucfm-guarded-bounds',
+                       action='store_true',
+                       dest='ucfm_guarded_bounds',
+                       default=False,
+                       help=('(EXPERIMENTAL) Let -O unit-coefficient-fm eliminate a variable whose bounds occur in\n'
+                             'clauses with Boolean literals, (or l_1 ... l_m bound). No effect without\n'
+                             '-O unit-coefficient-fm (or -O all).'))
+
 argparser.add_argument('--no-opt-fixpoint',
                        action='store_false',
                        dest='opt_fixpoint',
@@ -691,6 +700,8 @@ if 'all' in args.forbidden_optimizations:
 else:
     for opt in args.forbidden_optimizations:
         setattr(solver_config.optimizations, opt_to_config_field[opt], False)
+
+solver_config.optimizations.eliminate_guarded_bounds_by_fourier_motzkin = args.ucfm_guarded_bounds
 
 if args.opt_fixpoint is not None:
     solver_config.optimization_pipeline.enabled = args.opt_fixpoint

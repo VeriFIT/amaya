@@ -167,6 +167,19 @@ class OptimizationsConfig:
         (exists ((v Int)) (and (<= 0 v) (<= v x) (<= y v)))   --->   (and (<= 0 x) (<= y x))
     """
 
+    eliminate_guarded_bounds_by_fourier_motzkin: bool = False
+    """
+    (EXPERIMENTAL) Let `eliminate_unit_coefficient_vars_by_fourier_motzkin` use bounds that occur in a
+    clause with Boolean literals, `(or  l_1 ... l_m  bound)`; the combined atoms carry the literals of both
+    bounds. Has no effect unless `eliminate_unit_coefficient_vars_by_fourier_motzkin` is enabled. Not set by
+    `-O all`; enabled by `--ucfm-guarded-bounds`. See "Guarded bounds" in
+    amaya/preprocessing/unit_coefficient_fourier_motzkin.py.
+
+    Example:
+        (exists ((v Int)) (and (or (not b) (<= x v)) (or (not c) (<= v y))))
+          --->   (or (not b) (not c) (<= x y))
+    """
+
     propagate_modular_bounds: bool = False
     """
     (EXPERIMENTAL) Eliminate quantified variables that a congruence determines, carrying their bounds
