@@ -133,6 +133,7 @@ cdef extern from "base.hpp":
         void mark_state_final(State state) except +
 
     NFA c_compute_nfa_intersection "compute_nfa_intersection"(NFA& left, NFA& right) except +
+    NFA c_compute_nfa_union "compute_nfa_union"(const NFA& left, const NFA& right) except +
     void c_remove_nonfinishing_states "remove_nonfinishing_states"(NFA& nfa) except +
     NFA c_determinize_nfa "determinize_nfa"(NFA& nfa) except +
     NFA c_minimize_hopcroft "minimize_hopcroft"(NFA& nfa) except +
@@ -334,6 +335,18 @@ def compute_nfa_intersection(PyNFA left, PyNFA right):
     result._c_nfa = NULL
     try:
         result._c_nfa = new NFA(c_compute_nfa_intersection(left._c_nfa[0], right._c_nfa[0]))
+    except RuntimeError as err:
+        _reraise_interrupt(err)
+    return result
+
+
+def compute_nfa_union(PyNFA left, PyNFA right):
+    """ See `compute_nfa_union` in `include/base.hpp`. """
+    result = PyNFA()
+    del result._c_nfa
+    result._c_nfa = NULL
+    try:
+        result._c_nfa = new NFA(c_compute_nfa_union(left._c_nfa[0], right._c_nfa[0]))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result

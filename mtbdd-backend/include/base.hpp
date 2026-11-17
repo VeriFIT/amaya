@@ -196,6 +196,13 @@ struct NFA {
 
 
 NFA compute_nfa_intersection(NFA& left, NFA& right);
+/**
+ * The union of the languages of `left` and `right`: the disjoint union of the two automata. The states of
+ * `left` are renamed to 0..|left.states|-1 and those of `right` to the following numbers, both in
+ * ascending order of their original numbers. The variables of the result are the union of the variables
+ * of the operands; a variable missing in an operand is unconstrained in its transitions.
+ */
+NFA compute_nfa_union(const NFA& left, const NFA& right);
 void remove_nonfinishing_states(NFA& nfa);
 std::set<State> compute_states_reaching_set(NFA nfa, std::set<State>& states_to_reach);
 NFA determinize_nfa(NFA& nfa);

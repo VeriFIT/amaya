@@ -1232,3 +1232,94 @@ std::ostream& operator<<(std::ostream& output, const Transition& transition) {
 const char* bool_into_yes_no(bool it) {
    return (it ? "Yes" : "No");
 }
+
+
+/**
+ * Rename the states in the leaves of `root` according to `state_rename_map`, which must contain every
+ * state occurring in a leaf. Memoised over the nodes of `root` in `renamed_nodes`; every node stored in
+ * `renamed_nodes` is referenced and must be dereferenced by the caller.
+ *
+ * Implemented without `mtbdd_uapply`: its operation cache is keyed by the operation parameter, and a
+ * parameter pointing to a map can be reused for a different map at the same address.
+ */
+static MTBDD rename_states_in_mtbdd(MTBDD root,
+                                    const std::unordered_map<State, State>& state_rename_map,
+                                    std::unordered_map<MTBDD, MTBDD>& renamed_nodes) {
+    if (root == sylvan::mtbdd_false) return sylvan::mtbdd_false;
+
+    auto memoised_result = renamed_nodes.find(root);
+    if (memoised_result != renamed_nodes.end()) return memoised_result->second;
+
+    MTBDD result;
+    if (sylvan::mtbdd_isleaf(root)) {
+        auto old_destinations = reinterpret_cast<Transition_Destination_Set*>(sylvan::mtbdd_getvalue(root));
+        Transition_Destination_Set new_destinations;
+        for (State destination : old_destinations->destination_set) {
+            new_destinations.insert(state_rename_map.at(destination));
+        }
+        new_destinations.sort();
+        result = make_set_leaf(&new_destinations);  // the leaf constructor copies the contents
+    } else {
+        MTBDD renamed_low  = rename_states_in_mtbdd(sylvan::mtbdd_getlow(root), state_rename_map, renamed_nodes);
+        MTBDD renamed_high = rename_states_in_mtbdd(sylvan::mtbdd_gethigh(root), state_rename_map, renamed_nodes);
+        result = sylvan::mtbdd_makenode(sylvan::mtbdd_getvar(root), renamed_low, renamed_high);
+    }
+
+    // Keep the node alive until the whole MTBDD is renamed: a garbage collection triggered by a later
+    // mtbdd_makenode could otherwise reclaim it.
+    sylvan::mtbdd_ref(result);
+    renamed_nodes.emplace(root, result);
+    return result;
+}
+
+
+/**
+ * Add the transitions and the states of `operand` into `union_nfa`, renaming the states of `operand`
+ * to `first_state_number, first_state_number + 1, ...` in ascending order of their original numbers.
+ * Returns the first state number not used.
+ */
+static State add_renamed_operand_into_union(NFA& union_nfa, const NFA& operand, State first_state_number) {
+    std::unordered_map<State, State> state_rename_map;
+    State next_state_number = first_state_number;
+    for (State state : operand.states) {  // std::set iterates in ascending order
+        state_rename_map.emplace(state, next_state_number);
+        next_state_number += 1;
+    }
+
+    std::unordered_map<MTBDD, MTBDD> renamed_nodes;
+    for (auto& [origin, transitions] : operand.transitions) {
+        MTBDD renamed_transitions = rename_states_in_mtbdd(transitions, state_rename_map, renamed_nodes);
+        sylvan::mtbdd_ref(renamed_transitions);  // owned by `union_nfa`
+        union_nfa.transitions.emplace(state_rename_map.at(origin), renamed_transitions);
+    }
+    for (auto& [original_node, renamed_node] : renamed_nodes) sylvan::mtbdd_deref(renamed_node);
+
+    for (State state : operand.states) {
+        State renamed_state = state_rename_map.at(state);
+        union_nfa.states.insert(renamed_state);
+        if (operand.initial_states.count(state)) union_nfa.initial_states.insert(renamed_state);
+        if (operand.final_states.count(state))   union_nfa.final_states.insert(renamed_state);
+    }
+
+    return next_state_number;
+}
+
+
+NFA compute_nfa_union(const NFA& left, const NFA& right) {
+    LACE_ME;
+
+    sylvan::BDDSET union_vars = left.vars;
+    const u64 right_var_count = sylvan::mtbdd_set_count(right.vars);
+    std::vector<u32> right_vars(right_var_count);
+    sylvan::mtbdd_set_to_array(right.vars, right_vars.data());
+    for (u32 right_var : right_vars) {
+        union_vars = sylvan::mtbdd_set_add(union_vars, right_var);
+    }
+
+    NFA union_nfa(union_vars, sylvan::mtbdd_set_count(union_vars));
+
+    State first_unused_state_number = add_renamed_operand_into_union(union_nfa, left, 0);
+    add_renamed_operand_into_union(union_nfa, right, first_unused_state_number);
+
+    return union_nfa;
+}
