@@ -868,12 +868,39 @@ class Variable_Use_Info:
         self.next_available_relation_id += 1
         
 
-def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info):
+def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info, _polarity: bool | None = True,
+                      _binder_polarity_of_bound_var: dict[Var, bool] | None = None):
+    """
+    Record the occurrences of every variable of `root_node` into `var_use`.
+
+    A Boolean variable occurrence is recorded with its polarity relative to the quantifier binding the
+    variable: positive iff the number of negations between the binder and the occurrence is even. Then
+    a variable with only positive (only negative) recorded occurrences makes the body of its binder
+    monotonically increasing (decreasing), and `∃b. φ ≡ φ[b := True]` (`φ[b := False]`). The binder
+    can itself be under a negation (a universal quantifier); the relative polarity covers this case.
+
+    Occurrences of a free variable are recorded as both positive and negative, so a free variable is
+    never fixed: its value is part of the model reported to the user.
+
+    Children of an `EQUIV` connective occur in both polarities.
+
+    :param _polarity: Internal (recursion only). True iff `root_node` is under an even number of negations;
+                      None if `root_node` is under an `EQUIV` connective (both polarities).
+    :param _binder_polarity_of_bound_var: Internal (recursion only). Maps each variable bound by an
+                                          enclosing quantifier to the polarity of that quantifier.
+    """
+    binder_polarity_of_bound_var = _binder_polarity_of_bound_var if _binder_polarity_of_bound_var is not None else {}
+
     match root_node:
         case Var():
-            # TODO: Implement polarity tracking
-            var_use.add_positive_bool_var_use(root_node)
-            var_use.add_negative_bool_var_use(root_node)
+            binder_polarity = binder_polarity_of_bound_var.get(root_node)
+            if binder_polarity is None or _polarity is None:
+                var_use.add_positive_bool_var_use(root_node)
+                var_use.add_negative_bool_var_use(root_node)
+            elif binder_polarity == _polarity:
+                var_use.add_positive_bool_var_use(root_node)
+            else:
+                var_use.add_negative_bool_var_use(root_node)
 
         case BoolLiteral():
             pass
@@ -890,10 +917,18 @@ def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info):
 
         case AST_Connective():
             for child in root_node.children:
-                scan_variable_use(child, var_use)
+                child_polarity = None if root_node.type == Connective_Type.EQUIV else _polarity
+                scan_variable_use(child, var_use, child_polarity, binder_polarity_of_bound_var)
 
-        case AST_Negation() | AST_Quantifier():
-            scan_variable_use(root_node.child, var_use)
+        case AST_Negation():
+            negated_polarity = None if _polarity is None else not _polarity
+            scan_variable_use(root_node.child, var_use, negated_polarity, binder_polarity_of_bound_var)
+
+        case AST_Quantifier():
+            inner_binder_polarity_of_bound_var = dict(binder_polarity_of_bound_var)
+            for bound_var in root_node.bound_vars:
+                inner_binder_polarity_of_bound_var[bound_var] = _polarity
+            scan_variable_use(root_node.child, var_use, _polarity, inner_binder_polarity_of_bound_var)
 
         case _:
             raise ValueError(f'Unhandled node type when scanning variable use: {type(root_node)} :: {root_node}')
@@ -954,6 +989,9 @@ def remove_atoms_satisfied_by_unconstrained_vars(root_node: ASTp_Node,
             return root_node
 
         case Var():
+            if var_uses.relation_uses.get(root_node) or var_uses.congruence_uses.get(root_node):
+                return root_node  # also occurs as an integer variable; its polarity is unknown
+
             desired_value = var_uses.get_bool_var_desired_value(root_node)
 
             if desired_value is True:
