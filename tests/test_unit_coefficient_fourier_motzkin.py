@@ -143,6 +143,31 @@ def test_eliminating_one_variable_enables_another():
     assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[X])
 
 
+def test_combined_atom_is_divided_by_gcd_with_floor_of_rhs():
+    # exists v. (0 <= v  and  v <= 5w + 7)   --->   -5w <= 7   --->   -w <= floor(7/5) = 1
+    formula = dsl._exists((V,), dsl._and(_le([(-1, V)], 0), _le([(1, V), (-5, W)], 7)))
+
+    result = _eliminate(formula, W, V)
+
+    assert result == _le([(-1, W)], 1)
+    assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[W])
+
+
+def test_gcd_division_makes_another_variable_eliminable():
+    # exists v, w. (0 <= v  and  v <= 5w + 300007  and  w <= -3  and  w <= x - 449582)
+    # Eliminating v gives -5w <= 300007, i.e. -w <= 60001; w is then eliminable: x >= 389581.
+    formula = dsl._exists((V, W), dsl._and(
+        _le([(-1, V)], 0),
+        _le([(1, V), (-5, W)], 300007),
+        _le([(1, W)], -3),
+        _le([(1, W), (-1, X)], -449582),
+    ))
+
+    result = _eliminate(formula, X, V, W)
+
+    assert result == _le([(-1, X)], -389581)
+
+
 def test_non_unit_coefficient_is_left_unchanged():
     formula = dsl._exists((V,), dsl._and(_le([(-2, V)], 0), _le([(1, V), (-1, X)], 0)))
 
@@ -191,6 +216,116 @@ def test_natural_numbers_domain_adds_nonnegativity_of_eliminated_var():
 
     assert _eliminate(formula_over_integers, X, V) == BoolLiteral(True)
     assert _eliminate(formula_over_naturals, X, V, quantified_vars_are_nonnegative=True) == _le([(-1, X)], 0)
+
+
+# --- Bounds in a nested existential quantifier ---------------------------------------------------
+
+def test_bound_in_nested_quantifier_is_used_and_both_quantifiers_are_eliminated():
+    # exists v. (0 <= v  and  v <= 6  and  exists w. (w <= -1  and  w <= x - 2  and  v <= 5w + 12))
+    # v: 0 <= 6 (outside), -5w <= 12 -> -w <= 2 (inside); then w: -2 <= -1, -2 <= x - 2  ->  x >= 0
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], 0),
+        _le([(1, V)], 6),
+        dsl._exists((W,), dsl._and(
+            _le([(1, W)], -1),
+            _le([(1, W), (-1, X)], -2),
+            _le([(1, V), (-5, W)], 12),
+        )),
+    ))
+
+    result = _eliminate(formula, X, V, W)
+
+    assert result == _le([(-1, X)], 0)
+    assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[X])
+
+
+def test_nested_quantifier_is_kept_when_its_variable_is_not_eliminable():
+    # exists v. (0 <= v  and  exists w. (v <= w + 1  and  2w <= x))
+    #   --->  exists w. (2w <= x  and  -w <= 1)            (w has coefficient 2 in 2w <= x)
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], 0),
+        dsl._exists((W,), dsl._and(
+            _le([(1, V), (-1, W)], 1),
+            _le([(-1, X), (2, W)], 0),
+        )),
+    ))
+
+    result = _eliminate(formula, X, V, W)
+
+    expected = dsl._exists((W,), dsl._and(
+        _le([(-1, X), (2, W)], 0),
+        _le([(-1, W)], 1),
+    ))
+    fill_referenced_vars(expected)
+    assert result == expected
+    assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[X])
+
+
+def test_original_constants_of_the_two_level_shape():
+    # exists v. (0 <= v  and  v <= 299992  and  exists w. (w <= -3  and  w <= x - 449582  and  v <= 5w + 300007))
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], 0),
+        _le([(1, V)], 299992),
+        dsl._exists((W,), dsl._and(
+            _le([(1, W)], -3),
+            _le([(1, W), (-1, X)], -449582),
+            _le([(1, V), (-5, W)], 300007),
+        )),
+    ))
+
+    result = _eliminate(formula, X, V, W)
+
+    assert result == _le([(-1, X)], -389581)
+
+
+def test_nested_bound_var_occurring_in_another_conjunct_blocks_the_rewrite():
+    # The free w in `w <= 3` and the w bound by the nested quantifier are the same Var.
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], 0),
+        _le([(1, W)], 3),
+        dsl._exists((W,), dsl._and(
+            _le([(1, V), (-1, W)], 0),
+            _le([(-1, X), (2, W)], 0),
+        )),
+    ))
+    fill_referenced_vars(formula)
+
+    result = _eliminate(formula, X, V, W)
+
+    assert result == formula
+
+
+def test_bounds_in_two_sibling_quantifiers_block_the_rewrite():
+    formula = dsl._exists((V,), dsl._and(
+        dsl._exists((W,), dsl._and(
+            _le([(1, V), (-1, W)], 0),
+            _le([(-1, X), (2, W)], 0),
+        )),
+        dsl._exists((C,), dsl._and(
+            _le([(-1, V), (1, C)], 0),
+            _le([(-2, C), (-1, Y)], 0),
+        )),
+    ))
+    fill_referenced_vars(formula)
+
+    result = _eliminate(formula, X, Y, V, W, C)
+
+    assert result == formula
+
+
+def test_eliminated_var_rebound_by_nested_quantifier_blocks_the_rewrite():
+    formula = dsl._exists((V,), dsl._and(
+        _le([(-1, V)], 0),
+        dsl._exists((V,), dsl._and(
+            _le([(1, V), (-1, X)], 0),
+            _le([(-2, V), (1, Y)], 0),
+        )),
+    ))
+    fill_referenced_vars(formula)
+
+    result = _eliminate(formula, X, Y, V)
+
+    assert result == formula
 
 
 def test_bool_variable_is_not_eliminated():
