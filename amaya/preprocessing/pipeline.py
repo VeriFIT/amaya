@@ -278,7 +278,7 @@ def _registry_definition() -> List[Pass_Descriptor]:
         ),
         Pass_Descriptor(
             name='miniscope', config_flag='do_miniscoping',
-            run=lambda ast, ctx: miniscope_quantifiers(ast),
+            run=lambda ast, ctx: miniscope_quantifiers(ast, ctx.var_table),
             tier=Pass_Tier.HEAVY, max_runs=4, growth_factor_limit=1.5,
             consumes=frozenset({QUANTIFIER_SHAPE, NARY_SHAPE, VAR_ELIMINATED}),
             produces=frozenset({QUANTIFIER_SHAPE, NARY_SHAPE}),

@@ -226,7 +226,7 @@ def _optimize_formula_structure_legacy(astp: ASTp_Node, var_table: Dict[Var, Var
     if solver_config.optimizations.do_miniscoping:
         # `antiprenexing.get_referenced_vars` reads the `referenced_vars` annotation.
         fill_referenced_vars(astp)
-        astp = antiprenexing.miniscope_quantifiers(astp)
+        astp = antiprenexing.miniscope_quantifiers(astp, var_table)
 
     if solver_config.optimizations.optimize_bottom_quantifiers:
         logger.debug('Optimizing bottom quantifier:  %s', astp)
@@ -291,7 +291,7 @@ def _optimize_formula_structure_legacy(astp: ASTp_Node, var_table: Dict[Var, Var
         astp = flatten_bool_nary_connectives(astp)
         astp = resolve_conditional_equalities(astp)
         fill_referenced_vars(astp)
-        astp = antiprenexing.miniscope_quantifiers(astp)
+        astp = antiprenexing.miniscope_quantifiers(astp, var_table)
         astp = flatten_bool_nary_connectives(astp)
         astp = resolve_conditional_equalities(astp)
         astp = flatten_bool_nary_connectives(astp)

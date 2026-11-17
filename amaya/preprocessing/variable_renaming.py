@@ -136,3 +136,50 @@ def freshen_bound_variables_in_subformula(node: ASTp_Node, var_table: Dict[Var, 
     freshened_node = _freshen_bound_variables(node, {}, allocator)
     fill_referenced_vars(freshened_node)
     return freshened_node
+
+
+def substitute_free_occurrences_of_vars(node: ASTp_Node, substitution: Dict[Var, Var]) -> ASTp_Node:
+    """
+    Return `node` with every free occurrence of a variable `v` in `substitution` replaced by
+    `substitution[v]`. An occurrence below a quantifier binding `v` is bound there and is kept.
+    Returns `node` itself when nothing changes. Does not update `referenced_vars`.
+    """
+    if not substitution:
+        return node
+
+    match node:
+        case Var():
+            return substitution.get(node, node)
+
+        case BoolLiteral():
+            return node
+
+        case Relation() | Congruence():
+            if not any(var in substitution for var in node.vars):
+                return node
+            return _substitute_vars_in_atom_terms(node, substitution)
+
+        case AST_Negation():
+            substituted_child = substitute_free_occurrences_of_vars(node.child, substitution)
+            if substituted_child is node.child:
+                return node
+            return AST_Negation(referenced_vars=node.referenced_vars, child=substituted_child)
+
+        case AST_Connective():
+            substituted_children = tuple(substitute_free_occurrences_of_vars(child, substitution)
+                                         for child in node.children)
+            if all(substituted is original for substituted, original in zip(substituted_children, node.children)):
+                return node
+            return AST_Connective(referenced_vars=node.referenced_vars, type=node.type,
+                                  children=substituted_children, variable_bounds=node.variable_bounds)
+
+        case AST_Quantifier():
+            substitution_inside_binder = {var: replacement for var, replacement in substitution.items()
+                                          if var not in node.bound_vars}
+            substituted_child = substitute_free_occurrences_of_vars(node.child, substitution_inside_binder)
+            if substituted_child is node.child:
+                return node
+            return AST_Quantifier(referenced_vars=node.referenced_vars, bound_vars=node.bound_vars,
+                                  child=substituted_child)
+
+    raise ValueError(f'Unhandled formula node while substituting variables: {type(node)}')
