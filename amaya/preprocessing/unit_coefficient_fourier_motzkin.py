@@ -37,7 +37,8 @@ Occurrence shapes that abort the rewrite for `v` (the formula is left unchanged 
     - a coefficient of `v` other than +1, -1;
     - `v` in a congruence, in a negated equation, or in a nested connective or negation;
     - `v` in a nested quantifier that violates the side conditions above, or in a quantifier nested inside it;
-    - more than `|L| + |U|` atoms produced, i.e. `|L| * |U| > |L| + |U|` (see `_produces_no_more_atoms`).
+    - more than `|L| + |U|` atoms produced, i.e. `|L| * |U| > |L| + |U|` (see `_produces_no_more_atoms`;
+      relaxed by one atom for guarded bounds, see "Guarded bounds").
       The bounds from a nested quantifier are counted with the others.
 
 When the solution domain is the natural numbers, `v >= 0` is added to the lower bounds of `v`.
@@ -55,7 +56,10 @@ For a fixed assignment of the Boolean variables, the bounds whose guard holds ar
 the others are absent, and the unguarded rewrite applies to the bounds present; the pair `(i, j)` is
 present exactly when `G_i and H_j` holds. The combined clause is `(or  l_1 ... l_m  l'_1 ... l'_n
 L_i <= U_j)`; it is dropped if it contains a literal and its negation or if the combined atom folds to
-True. The criterion on the number of atoms is unchanged; a combined clause has up to `m + n` literals.
+True. A combined clause has up to `m + n` literals. With `allow_guarded_bounds`, the criterion on the number
+of atoms admits one additional atom (`|L| * |U| <= |L| + |U| + 1`) when the eliminated variable is the
+last variable of its quantifier and the bounds do not involve a nested quantifier, i.e. when the
+rewrite leaves no quantifier (see `_is_growth_admissible`).
 
 Every combined atom `sum a_i.x_i <= k` with `g = gcd(a_i) > 1` is replaced by
 `sum (a_i / g).x_i <= floor(k / g)`, which is an equivalence for integer-valued `x_i` (both solution
@@ -227,6 +231,21 @@ def _produces_no_more_atoms(bounds: Bounds_On_Eliminated_Var) -> bool:
     return lower_count * upper_count <= lower_count + upper_count
 
 
+def _is_growth_admissible(bounds: Bounds_On_Eliminated_Var, removes_the_quantifier: bool,
+                          allow_guarded_bounds: bool) -> bool:
+    """
+    `_produces_no_more_atoms`, relaxed by one atom when the rewrite removes the last variable of its
+    quantifier and guarded bounds are enabled (see the module docstring).
+    """
+    if _produces_no_more_atoms(bounds):
+        return True
+    if not (allow_guarded_bounds and removes_the_quantifier):
+        return False
+    lower_count = len(bounds.lower_bounds)
+    upper_count = len(bounds.upper_bounds)
+    return lower_count * upper_count <= lower_count + upper_count + 1
+
+
 def _combine_lower_and_upper_bound(lower_bound: Unit_Coefficient_Bound, upper_bound: Unit_Coefficient_Bound) -> ASTp_Node:
     """
     (-v + T_lower <= k_lower) + (v + T_upper <= k_upper)  =  (T_lower + T_upper <= k_lower + k_upper),
@@ -291,7 +310,8 @@ def _make_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node) -> ASTp_Node:
 
 def _try_eliminate_var_by_fourier_motzkin(eliminated_var: Var, body: ASTp_Node, var_table: Dict[Var, VarInfo],
                                           quantified_vars_are_nonnegative: bool,
-                                          allow_guarded_bounds: bool = False) -> Optional[ASTp_Node]:
+                                          allow_guarded_bounds: bool = False,
+                                          is_last_bound_var_of_quantifier: bool = False) -> Optional[ASTp_Node]:
     """
     Returns the body with `eliminated_var` eliminated, or None if some occurrence of `eliminated_var` is
     not admissible or the rewrite would increase the number of atoms.
@@ -336,7 +356,8 @@ def _try_eliminate_var_by_fourier_motzkin(eliminated_var: Var, body: ASTp_Node, 
         if not _classify_conjunct_into_bounds(conjunct, eliminated_var, bounds, allow_guarded_bounds=allow_guarded_bounds):
             return None
 
-    if not _produces_no_more_atoms(bounds):
+    removes_the_quantifier = is_last_bound_var_of_quantifier and nested_quantifier is None
+    if not _is_growth_admissible(bounds, removes_the_quantifier, allow_guarded_bounds):
         return None
 
     for lower_bound in bounds.lower_bounds:
@@ -375,7 +396,8 @@ def _eliminate_vars_of_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node, 
 
             rewritten_body = _try_eliminate_var_by_fourier_motzkin(var, current_body, var_table,
                                                                    quantified_vars_are_nonnegative,
-                                                                   allow_guarded_bounds)
+                                                                   allow_guarded_bounds,
+                                                                   is_last_bound_var_of_quantifier=len(remaining_bound_vars) == 1)
             if rewritten_body is None:
                 continue
 
