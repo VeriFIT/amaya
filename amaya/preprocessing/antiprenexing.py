@@ -48,6 +48,9 @@ def _perform_miniscoping(quantif_node: AST_Quantifier) -> ASTp_Node:
 
     connective: AST_Connective = quantif_node.child
 
+    if connective.type == Connective_Type.OR:
+        return _distribute_quantifier_over_disjunction(quantif_node.bound_vars, connective)
+
     bound_vars = set(quantif_node.bound_vars)
 
     scope_range = list(miniscope_quantifiers(child) for child in connective.children)
@@ -103,6 +106,39 @@ def _perform_miniscoping(quantif_node: AST_Quantifier) -> ASTp_Node:
 
     # Scope size is 1
     return scope_range[0]
+
+
+def _distribute_quantifier_over_disjunction(bound_vars: Iterable[Var], disjunction: AST_Connective) -> ASTp_Node:
+    """
+    Rewrite `∃X. (D_1 ∨ ... ∨ D_n)` into `(∃X_1. D_1) ∨ ... ∨ (∃X_n. D_n)`, where `X_i` are the variables
+    of `X` referenced in `D_i`. The rewrite is an equivalence for any `D_i`.
+
+    Each `∃X_i. D_i` is miniscoped further, so a variable that occurs in every disjunct ends up bound
+    separately in each disjunct, where passes working on one quantifier body (e.g. the substitution of
+    defining equations in `theory_reasoning.simplify_formula_using_model_properties`) can eliminate it.
+    The copies of a variable bound in different disjuncts keep the same `Var` id; their scopes are disjoint.
+    """
+    bound_var_set = set(bound_vars)
+
+    new_disjuncts: List[ASTp_Node] = []
+    for disjunct in disjunction.children:
+        disjunct_referenced_vars = tuple(sorted(set(get_referenced_vars(disjunct))))
+        disjunct_bound_vars = tuple(var for var in disjunct_referenced_vars if var in bound_var_set)
+
+        if not disjunct_bound_vars:
+            new_disjuncts.append(miniscope_quantifiers(disjunct))
+            continue
+
+        quantified_disjunct = AST_Quantifier(referenced_vars=disjunct_referenced_vars,
+                                             bound_vars=disjunct_bound_vars,
+                                             child=disjunct)
+        new_disjuncts.append(_perform_miniscoping(quantified_disjunct))
+
+    referenced_vars = functools.reduce(set.union, (set(get_referenced_vars(disjunct)) for disjunct in new_disjuncts), set())
+    return AST_Connective(referenced_vars=tuple(sorted(referenced_vars)),
+                          type=Connective_Type.OR,
+                          children=tuple(new_disjuncts),
+                          variable_bounds=disjunction.variable_bounds)
 
 
 def miniscope_quantifiers(ast: ASTp_Node):
