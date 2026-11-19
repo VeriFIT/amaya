@@ -244,6 +244,41 @@ ASSERTION_OPTIMIZER_MODES = (ASSERTION_OPTIMIZER_MODE_NONE,
 
 
 @dataclass
+class CegqiAutomataConfig:
+    """
+    (EXPERIMENTAL, disabled by default) Configuration of the exists-forall strategy with automata
+    projection lemmas implemented in `amaya/cegqi_automata.py`. See `docs/CEGQI with automata.md`.
+    """
+
+    enabled: bool = False
+    """ Select `amaya.cegqi_automata.evaluate_prepared_formula_with_cegqi_automata` as the top-level driver. """
+
+    show_shape: bool = False
+    """ Print the detected exists-forall shape (parameter and clause counts) and exit. """
+
+    max_rounds: Optional[int] = None
+    """ Stop with an error after this many synthesis-verification rounds. None means no limit. """
+
+    report: bool = False
+    """ Log the per-run counters (rounds, lemmas, automaton sizes, times) after the loop finishes. """
+
+    generalization: str = 'disjunct'
+    """ What a counterexample teaches: 'disjunct', 'point' or 'disjunct-and-point'. See `amaya.cegqi_automata.solve_exists_forall_shape_with_cegqi`. """
+
+    counterexample_seed_depth: int = 0
+    """ Forward seeding steps from the states of every counterexample; 0 disables it. """
+
+    seed_depth: int = 0
+    """ Forward ground seeding depth (`amaya.cegqi_automata.compute_forward_ground_seeds`); 0 disables it. """
+
+    implicant_preference: str = 'fewer-guards'
+    """
+    Which implicant of a violated clause a lemma is built from: 'fewer-guards' or 'fewer-atoms'. See
+    `amaya.cegqi_automata.extract_implicant_at_point`.
+    """
+
+
+@dataclass
 class DpllTAutomataConfig:
     """
     (EXPERIMENTAL) Configuration of the DPLL(T)-style top-level strategy implemented in
@@ -379,6 +414,9 @@ class SolverConfig(object):
 
     dpllt_automata: DpllTAutomataConfig = field(default_factory=DpllTAutomataConfig)
     """(Experimental) DPLL(T)-style top-level strategy configuration - see `DpllTAutomataConfig`."""
+
+    cegqi_automata: CegqiAutomataConfig = field(default_factory=CegqiAutomataConfig)
+    """(Experimental) Exists-forall strategy configuration - see `CegqiAutomataConfig`."""
 
     backend: BackendConfig = field(default_factory=BackendConfig)
 

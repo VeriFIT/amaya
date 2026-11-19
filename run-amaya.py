@@ -184,6 +184,72 @@ argparser.add_argument('--use-dpllt-automata',
                              'Cannot be combined with --shard or --use-toplevel-sat. Requires python-sat.\n'
                              'See docs/DPLLT_WITH_AUTOMATA.md.'))
 
+argparser.add_argument('--use-cegqi-automata',
+                       action='store_true',
+                       dest='use_cegqi_automata',
+                       default=False,
+                       help=('(EXPERIMENTAL) Decide a formula of the shape exists P. forall X. AND C_i by alternating\n'
+                             'candidate synthesis over P with verification over X, learning lemmas by projecting\n'
+                             'the X tracks of the automaton of a violated clause. Formulae of other shapes fall\n'
+                             'through to the ordinary evaluation. Requires -m MTBDD and python-sat. Cannot be\n'
+                             'combined with --shard, --use-toplevel-sat or --use-dpllt-automata.\n'
+                             'See docs/CEGQI with automata.md.'))
+
+argparser.add_argument('--cegqi-show-shape',
+                       action='store_true',
+                       dest='cegqi_show_shape',
+                       default=False,
+                       help=('(EXPERIMENTAL) Print the exists-forall shape detected by --use-cegqi-automata\n'
+                             '(parameter, universal variable and clause counts) and exit. Implies\n'
+                             '--use-cegqi-automata.'))
+
+argparser.add_argument('--cegqi-max-rounds',
+                       type=int,
+                       dest='cegqi_max_rounds',
+                       default=None,
+                       metavar='N',
+                       help='(EXPERIMENTAL) Abort --use-cegqi-automata after N rounds (default: no limit).')
+
+argparser.add_argument('--cegqi-implicant-preference',
+                       choices=('fewer-guards', 'fewer-atoms'),
+                       dest='cegqi_implicant_preference',
+                       default='fewer-guards',
+                       help=('(EXPERIMENTAL) Which implicant of a violated clause a --use-cegqi-automata lemma is\n'
+                             'built from. "fewer-guards" (default) keeps the lemma\'s Bool antecedent small and its\n'
+                             'automata large; "fewer-atoms" does the opposite.'))
+
+argparser.add_argument('--cegqi-seed-depth',
+                       type=int,
+                       dest='cegqi_seed_depth',
+                       default=0,
+                       metavar='N',
+                       help=('(EXPERIMENTAL) Before the --use-cegqi-automata loop, assert ground instances of the\n'
+                             'clauses along forward executions of up to N steps from the all-zero state. Needs\n'
+                             'universal variables named x_<d> / y_<d> (pre- and post-state). Default 0 (off).'))
+
+argparser.add_argument('--cegqi-generalization',
+                       choices=('disjunct', 'point', 'disjunct-and-point'),
+                       dest='cegqi_generalization',
+                       default='disjunct',
+                       help=('(EXPERIMENTAL) What a --use-cegqi-automata counterexample teaches: a projection lemma\n'
+                             '("disjunct", default), the clause\'s ground instance at the counterexample ("point";\n'
+                             'no termination guarantee), or both.'))
+
+argparser.add_argument('--cegqi-counterexample-seed-depth',
+                       type=int,
+                       dest='cegqi_counterexample_seed_depth',
+                       default=0,
+                       metavar='N',
+                       help=('(EXPERIMENTAL) Continue forward ground seeding (see --cegqi-seed-depth) for N steps from\n'
+                             'the pre- and post-state of every --use-cegqi-automata counterexample. Default 0.'))
+
+argparser.add_argument('--cegqi-report',
+                       action='store_true',
+                       dest='cegqi_report',
+                       default=False,
+                       help=('(EXPERIMENTAL) Log the --use-cegqi-automata per-run counters (rounds, lemmas,\n'
+                             'automaton sizes, times) after the loop finishes.'))
+
 argparser.add_argument('--dpllt-assertion-optimizer',
                        choices=ASSERTION_OPTIMIZER_MODES,
                        dest='dpllt_assertion_optimizer',
@@ -754,6 +820,22 @@ if args.dpllt_report:
 
 solver_config.decide_atom_conjunctions_by_early_stopping_lazy_construction = args.early_stop_lazy_construction
 
+# `--use-cegqi-automata` is a fourth top-level driver replacing `evaluate_prepared_formula`; it excludes
+# the other drivers for the same reason they exclude each other. See `docs/CEGQI with automata.md`.
+solver_config.cegqi_automata.enabled = args.use_cegqi_automata or args.cegqi_show_shape
+solver_config.cegqi_automata.show_shape = args.cegqi_show_shape
+solver_config.cegqi_automata.max_rounds = args.cegqi_max_rounds
+solver_config.cegqi_automata.report = args.cegqi_report
+solver_config.cegqi_automata.seed_depth = args.cegqi_seed_depth
+solver_config.cegqi_automata.generalization = args.cegqi_generalization
+solver_config.cegqi_automata.counterexample_seed_depth = args.cegqi_counterexample_seed_depth
+solver_config.cegqi_automata.implicant_preference = args.cegqi_implicant_preference
+if solver_config.cegqi_automata.enabled and (args.sharding_enabled or args.use_toplevel_sat
+                                             or solver_config.dpllt_automata.enabled):
+    print('Error: --use-cegqi-automata cannot be combined with --shard, --use-toplevel-sat or '
+          '--use-dpllt-automata.', file=sys.stderr)
+    sys.exit(1)
+
 
 def get_evaluation_strategy():
     """
@@ -762,6 +844,10 @@ def get_evaluation_strategy():
     `amaya.sat_toplevel` and `amaya.dpllt_automata` are imported lazily (like `amaya.cse_cache` below)
     so that the python-sat dependency is only ever touched when the feature is explicitly requested.
     """
+    if solver_config.cegqi_automata.enabled:
+        from amaya.cegqi_automata import evaluate_prepared_formula_with_cegqi_automata
+        return evaluate_prepared_formula_with_cegqi_automata
+
     if solver_config.dpllt_automata.enabled:
         from amaya.dpllt_automata import evaluate_prepared_formula_with_dpllt_automata
         return evaluate_prepared_formula_with_dpllt_automata
