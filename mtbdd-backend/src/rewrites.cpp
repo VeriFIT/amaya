@@ -602,7 +602,7 @@ void simplify_graph_with_unbound_var(Dep_Graph* graph, u64 var) {
     var_node.lower_bounds.clear();
     var_node.upper_bounds.clear();
     var_node.hard_lower_bound.atom_i = Var_Node::TOMBSTONE;
-    var_node.hard_lower_bound.atom_i = Var_Node::TOMBSTONE;
+    var_node.hard_upper_bound.atom_i = Var_Node::TOMBSTONE;
 }
 
 bool instantiate_quantifs_with_inf(Dep_Graph** graph_ptr, Ritch_Conjunction_State* state) {
