@@ -395,14 +395,10 @@ void set_var_value_in_eq(
         // An equation without variables states 0 = rhs, which can be false.
         if (state->get_eq_val(eq_idx) != 0) graph->is_false = true;
         else                                eq.is_satisfied = true;
-    } else if (eq.vars.size() == 1) { // The atom has became a new bound for the remaining variable
-        u64 last_var      = eq.vars[0];
-        u64 last_var_coef = eq.coefs[last_var];
-        auto& var_node    = graph->var_nodes[last_var];
-
-        var_node.hard_lower_bound.atom_i = eq_idx;
-        var_node.hard_upper_bound.atom_i = eq_idx;
     }
+    // An equation left with one variable is not recorded as a hard bound: `Hard_Bound::atom_i` indexes
+    // `graph->inequations`, and the equation fixes the variable's value, which
+    // `substitute_vars_with_known_value` substitutes by scanning the variable's equations.
 }
 
 void set_var_value_in_ineq(

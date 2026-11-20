@@ -105,6 +105,29 @@ def test_early_stopped_construction_of_an_unsatisfiable_conjunction_has_no_model
     assert nfa.find_model() is None
 
 
+@pytest.mark.parametrize('last_atom_rhs, is_satisfiable', [(-1, False), (0, True)])
+@pytest.mark.parametrize('stop_after_first_accepting_macrostate', [True, False])
+def test_equation_left_with_one_variable_by_substitution(last_atom_rhs, is_satisfiable,
+                                                         stop_after_first_accepting_macrostate, mtbdd_solver_config):
+    # a, b, c are fixed to 0 by their bounds; substituting them leaves d = a, e = b, f = c with one
+    # variable each. The simplification used to record such an equation as a hard bound of d, e, f and
+    # then read it as an inequation (`mtbdd-backend/src/rewrites.cpp:set_var_value_in_eq`): SIGSEGV/SIGFPE.
+    a, b, c, d, e, f = (Var(id=10 + index) for index in range(6))
+    atoms = [_le([(-1, a)], 0), _le([(1, a)], 0), _le([(-1, b)], 0), _le([(1, b)], 0), _le([(-1, c)], 0), _le([(1, c)], 0),
+             _eq([(-1, a), (1, d)], 0), _eq([(-1, b), (1, e)], 0), _eq([(-1, c), (1, f)], 0),
+             _le([(-1, d), (1, e)], last_atom_rhs)]
+    alphabet = LSBF_Alphabet.from_vars([a, b, c, d, e, f])
+    nfa = MTBDDTransitionFn.construct_dfa_for_atom_conjunction(
+        atoms, [], alphabet, stop_after_first_accepting_macrostate=stop_after_first_accepting_macrostate)
+
+    binary_model = nfa.find_model()
+
+    assert (binary_model is not None) == is_satisfiable
+    if binary_model is not None:
+        model = parse.convert_binary_model_into_decadic(binary_model, tuple(nfa.used_variables))
+        assert all(_holds(atom, {var: model.get(var, 0) for var in (a, b, c, d, e, f)}) for atom in atoms), model
+
+
 def test_model_of_free_variables_with_a_quantified_variable(mtbdd_solver_config):
     # exists y. (x = 3y + 1  and  0 <= y <= 5  and  x >= 7)  - x in {7, 10, 13, 16}
     atoms = [_eq([(1, X), (-3, Y)], 1), _le([(-1, Y)], 0), _le([(1, Y)], 5), _le([(-1, X)], -7)]
