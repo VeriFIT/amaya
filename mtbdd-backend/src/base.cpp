@@ -540,6 +540,7 @@ void NFA::remove_states(std::set<State>& states_to_remove) {
         auto [state, state_transitions] = *transitions_it;
 
         if (states_to_remove.contains(state)) {
+            sylvan::mtbdd_deref(state_transitions);
             transitions_it = transitions.erase(transitions_it);
         } else {
             using namespace sylvan;
