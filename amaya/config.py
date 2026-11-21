@@ -46,6 +46,15 @@ class BackendConfig(object):
     states, prune destinations strictly simulated by another destination of the same transition.
     """
 
+    reduce_by_simulation_before_projection: bool = False
+    """
+    (EXPERIMENTAL, disabled by default) Before projecting the bound variables of a quantifier
+    (`amaya.parse.evaluate_exists_expr`), reduce the automaton of its body: a deterministic one is
+    minimized, any other one is reduced by the maximal forward direct simulation (see
+    `reduce_by_simulation_before_determinization`). Projection takes time proportional to the number of
+    states, and the subset construction after it grows with the size of the projected NFA.
+    """
+
     simulation_reduction_max_states: int = 4000
     """
     Automata with more states than this (after removing useless states) skip the simulation: the

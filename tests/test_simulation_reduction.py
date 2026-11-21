@@ -147,3 +147,46 @@ def test_deterministic_automaton_is_returned_unchanged(simulation_reduction_disa
 
     assert reduced.states == {0, 1, 2, 3}
     assert_same_language(nfa, reduced)
+
+
+def test_deterministic_automaton_is_minimized_when_requested(simulation_reduction_disabled):
+    # 1, 2 and 4 are equivalent states of a deterministic automaton; the minimal complete DFA has an
+    # initial state, the merged state, the final state and a trap state.
+    nfa = make_nfa(states={0, 1, 2, 3, 4}, initial_states={0}, final_states={3},
+                   transitions=[(0, (0, 0), 1), (0, (1, 1), 2), (0, (0, 1), 4),
+                                (1, (1, 1), 3), (2, (1, 1), 3), (4, (1, 1), 3)])
+
+    reduced = MTBDDTransitionFn.reduce_nfa_by_forward_simulation(nfa, max_states=0, minimize_if_deterministic=True)
+
+    assert len(reduced.states) == 4
+    assert_same_language(nfa, reduced)
+
+
+QUANTIFIED_FORMULAS = [
+    # (assertion over the free variables a, b, expected satisfiability)
+    ('(exists ((x Int) (y Int)) (and (<= (+ x y) a) (= (- x y) 3) (>= x 2) (<= y b)))', True),
+    ('(exists ((x Int)) (and (<= a (* 2 x)) (<= (* 2 x) (+ a 1)) (= (mod a 2) 1) (<= x b) (<= b (- x 1))))', False),
+    ('(forall ((x Int)) (=> (and (<= 0 x) (<= x a)) (<= (* 3 x) (+ b 7))))', True),
+    ('(and (> a 5) (forall ((x Int)) (exists ((y Int)) (and (<= x y) (<= y (+ x a)) (= (mod y 3) b)))))', True),
+    ('(and (= b 0) (exists ((x Int) (y Int)) (and (= (+ (* 2 x) (* 4 y)) (+ a 1)) (= (mod a 2) 0))))', False),
+]
+
+
+@pytest.mark.parametrize('assertion, expected_is_sat', QUANTIFIED_FORMULAS)
+def test_reduction_before_projection_keeps_verdicts(simulation_reduction_disabled, assertion, expected_is_sat):
+    from amaya import parse
+    from amaya.config import BackendType, SolutionDomain
+    source = ('(set-logic LIA)\n(declare-fun a () Int)\n(declare-fun b () Int)\n'
+              f'(assert {assertion})\n(check-sat)\n')
+    saved_backend_type, saved_domain = solver_config.backend_type, solver_config.solution_domain
+    solver_config.backend_type, solver_config.solution_domain = BackendType.MTBDD, SolutionDomain.INTEGERS
+    try:
+        verdicts = []
+        for is_reduction_enabled in (False, True):
+            solver_config.backend.reduce_by_simulation_before_projection = is_reduction_enabled
+            solver_config.backend.reduce_by_simulation_before_determinization = is_reduction_enabled
+            result = parse.perform_whole_evaluation_on_source_text(source)
+            verdicts.append(result.model is not None)
+    finally:
+        solver_config.backend_type, solver_config.solution_domain = saved_backend_type, saved_domain
+    assert verdicts == [expected_is_sat, expected_is_sat]

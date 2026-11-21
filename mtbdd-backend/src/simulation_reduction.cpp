@@ -19,9 +19,9 @@ pruning step is `P(id, <)` of Mayr and Clemente, "Advanced automata minimization
 Every state `q` with `p <= q` accepts a superset of the words `p` accepts. `reduce_nfa_by_forward_simulation`
 applies, in this order, four language-preserving steps:
 
-A deterministic automaton (at most one initial state and one destination per state and symbol) is
-returned unchanged: on it, simulation coincides with language inclusion and minimization is the
-reduction to apply.
+On a deterministic automaton (at most one initial state and one destination per state and symbol),
+simulation coincides with language inclusion and minimization is the reduction to apply: such an
+automaton is minimized if `minimize_if_deterministic` is set and returned unchanged otherwise.
 
 | Step | Rewrite |
 | --- | --- |
@@ -269,12 +269,17 @@ static bool is_nfa_deterministic(const NFA& nfa) {
     return true;
 }
 
-NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states) {
+NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_deterministic) {
     LACE_ME;
     Interrupt_Guard interrupt_guard;
 
     // Simulation coincides with language inclusion on a deterministic automaton; minimization reduces it.
-    if (is_nfa_deterministic(nfa)) return NFA(nfa);
+    if (is_nfa_deterministic(nfa)) {
+        if (!minimize_if_deterministic) return NFA(nfa);
+        // minimize_hopcroft expects a complete DFA; determinize_nfa completes it with a trap state.
+        NFA complete_dfa = determinize_nfa(nfa);
+        return minimize_hopcroft(complete_dfa);
+    }
 
     NFA useful_nfa(nfa);
     remove_nonfinishing_states(useful_nfa);

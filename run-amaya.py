@@ -356,6 +356,13 @@ argparser.add_argument('--reduce-by-simulation-before-determinization',
                        help='(Experimental) Requires -m MTBDD. Before every determinization, reduce the NFA by the maximal\n'
                             'forward direct simulation: remove useless states, merge simulation-equivalent states and prune\n'
                             'destinations strictly simulated by another destination of the same transition.')
+argparser.add_argument('--reduce-by-simulation-before-projection',
+                       action='store_true',
+                       default=False,
+                       dest='reduce_by_simulation_before_projection',
+                       help='(Experimental) Requires -m MTBDD. Before projecting the variables of a quantifier, minimize\n'
+                            'the automaton of its body if it is deterministic, and reduce it by the maximal forward direct\n'
+                            'simulation otherwise.')
 argparser.add_argument('--simulation-reduction-max-states',
                        type=int,
                        default=4000,
@@ -679,6 +686,7 @@ elif 'fast' not in args:
     solver_config.minimization_method = MinimizationAlgorithms.NONE
 
 solver_config.backend.reduce_by_simulation_before_determinization = args.reduce_by_simulation_before_determinization
+solver_config.backend.reduce_by_simulation_before_projection = args.reduce_by_simulation_before_projection
 solver_config.backend.simulation_reduction_max_states = args.simulation_reduction_max_states
 
 solver_config.optimizations.allow_sharding = args.sharding_enabled

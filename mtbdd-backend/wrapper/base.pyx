@@ -135,7 +135,7 @@ cdef extern from "base.hpp":
     void c_remove_nonfinishing_states "remove_nonfinishing_states"(NFA& nfa) except +
     NFA c_determinize_nfa "determinize_nfa"(NFA& nfa) except +
     NFA c_minimize_hopcroft "minimize_hopcroft"(NFA& nfa) except +
-    NFA c_reduce_nfa_by_forward_simulation "reduce_nfa_by_forward_simulation"(NFA& nfa, u64 max_states) except +
+    NFA c_reduce_nfa_by_forward_simulation "reduce_nfa_by_forward_simulation"(NFA& nfa, u64 max_states, bint minimize_if_deterministic) except +
     NFA c_rename_vars "rename_vars"(NFA& nfa, unordered_map[u32, u32]& renaming) except +
 
 
@@ -361,12 +361,12 @@ def minimize_hopcroft(PyNFA nfa):
     return result
 
 
-def reduce_nfa_by_forward_simulation(PyNFA nfa, u64 max_states):
+def reduce_nfa_by_forward_simulation(PyNFA nfa, u64 max_states, bint minimize_if_deterministic):
     result = PyNFA()
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_reduce_nfa_by_forward_simulation(nfa._c_nfa[0], max_states))
+        result._c_nfa = new NFA(c_reduce_nfa_by_forward_simulation(nfa._c_nfa[0], max_states, minimize_if_deterministic))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result

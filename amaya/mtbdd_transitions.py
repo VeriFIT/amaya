@@ -468,10 +468,10 @@ class MTBDDTransitionFn():
         return _nfa_from_pynfa(pynfa, nfa.alphabet, AutomatonType.NFA)
 
     @staticmethod
-    def reduce_nfa_by_forward_simulation(nfa: MTBDD_NFA, max_states: int) -> MTBDD_NFA:
+    def reduce_nfa_by_forward_simulation(nfa: MTBDD_NFA, max_states: int, minimize_if_deterministic: bool = False) -> MTBDD_NFA:
         """ See `reduce_nfa_by_forward_simulation` in mtbdd-backend/include/base.hpp. """
         pynfa = _snapshot_pynfa(nfa)
-        result_pynfa = libamaya.reduce_nfa_by_forward_simulation(pynfa, max_states)
+        result_pynfa = libamaya.reduce_nfa_by_forward_simulation(pynfa, max_states, minimize_if_deterministic)
         return _nfa_from_pynfa(result_pynfa, nfa.alphabet, AutomatonType.NFA)
 
     @staticmethod
