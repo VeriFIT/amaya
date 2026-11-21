@@ -202,6 +202,17 @@ NFA determinize_nfa(NFA& nfa);
 NFA minimize_hopcroft(NFA& nfa);
 
 /*
+Removes useless states, merges simulation-equivalent states, prunes destinations strictly simulated by
+another destination of the same transition, and removes unreachable states, using the maximal forward
+direct simulation (see src/simulation_reduction.cpp). The result accepts the same language and is an
+NFA; a deterministic `nfa` is returned unchanged. With `max_states` > 0, an automaton with more states (after removing useless states) is returned
+with only the useless states removed.
+*/
+NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states);
+
+void collect_reachable_states_from_mtbdd_leaves(sylvan::MTBDD root, std::set<State>& output);
+
+/*
 Renames the automaton's tracks (MTBDD variables) according to `renaming` (old var id -> new var id;
 vars with no entry keep their id). The renaming must be order-preserving - if `old_a < old_b` among
 the automaton's vars, then `renaming[old_a] < renaming[old_b]` must hold too (this is what MTBDD

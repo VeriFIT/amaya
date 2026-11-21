@@ -349,6 +349,19 @@ argparser.add_argument('-m',
                        default=None,
                        help='Minimize the automatons eagerly using the specified minimization algorithm.')
 
+argparser.add_argument('--reduce-by-simulation-before-determinization',
+                       action='store_true',
+                       default=False,
+                       dest='reduce_by_simulation_before_determinization',
+                       help='(Experimental) Requires -m MTBDD. Before every determinization, reduce the NFA by the maximal\n'
+                            'forward direct simulation: remove useless states, merge simulation-equivalent states and prune\n'
+                            'destinations strictly simulated by another destination of the same transition.')
+argparser.add_argument('--simulation-reduction-max-states',
+                       type=int,
+                       default=4000,
+                       dest='simulation_reduction_max_states',
+                       help='Skip the simulation reduction for automata with more states (0 = no limit). Default: 4000.')
+
 argparser.add_argument('--shard',
                        dest='sharding_enabled',
                        action='store_true',
@@ -664,6 +677,9 @@ elif args.minimization_method == 'brzozowski':
         sys.exit(1)
 elif 'fast' not in args:
     solver_config.minimization_method = MinimizationAlgorithms.NONE
+
+solver_config.backend.reduce_by_simulation_before_determinization = args.reduce_by_simulation_before_determinization
+solver_config.backend.simulation_reduction_max_states = args.simulation_reduction_max_states
 
 solver_config.optimizations.allow_sharding = args.sharding_enabled
 

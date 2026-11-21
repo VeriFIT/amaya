@@ -38,6 +38,20 @@ class BackendConfig(object):
     mtbdd-backend/src/lazy.cpp) always uses bit sets.
     """
 
+    reduce_by_simulation_before_determinization: bool = False
+    """
+    (EXPERIMENTAL, disabled by default) Before `MTBDD_NFA.determinize`, reduce the NFA by the maximal
+    forward direct simulation (`libamaya.reduce_nfa_by_forward_simulation`, see
+    mtbdd-backend/src/simulation_reduction.cpp): remove useless states, merge simulation-equivalent
+    states, prune destinations strictly simulated by another destination of the same transition.
+    """
+
+    simulation_reduction_max_states: int = 4000
+    """
+    Automata with more states than this (after removing useless states) skip the simulation: the
+    relation has |Q|^2 bits and its first pass checks every pair of states. 0 means no limit.
+    """
+
 
 @dataclass
 class OptimizationsConfig:
