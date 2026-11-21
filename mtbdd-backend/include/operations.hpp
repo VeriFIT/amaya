@@ -73,6 +73,22 @@ TASK_DECL_2(sylvan::MTBDD, replace_macrostates_with_handles_op, sylvan::MTBDD, s
 TASK_DECL_2(sylvan::MTBDD, remove_states2_op, sylvan::MTBDD, size_t);
 
 
+/*
+Membership in a set of states to remove, the parameter of `remove_states2_op`: a bitmap over state ids
+when the largest id is at most a fixed multiple of the set size, the set itself otherwise.
+*/
+struct State_Removal_Lookup {
+    const std::set<State>& states_to_remove;
+    std::vector<bool> is_state_removed;
+
+    explicit State_Removal_Lookup(const std::set<State>& states_to_remove);
+
+    bool contains(State state) const {
+        if (is_state_removed.empty()) return states_to_remove.contains(state);
+        return state < is_state_removed.size() && is_state_removed[state];
+    }
+};
+
 struct Replace_States_With_Partition_Info {
     std::unordered_map<State, State> state_to_eq_class_id;
 };
