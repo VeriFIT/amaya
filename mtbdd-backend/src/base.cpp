@@ -533,6 +533,9 @@ std::set<State> NFA::get_state_post(State state) {
 
 void NFA::remove_states(std::set<State>& states_to_remove) {
     LACE_ME;
+    // The operation cache is keyed by a fresh operation id: keyed by the address of `states_to_remove`, a
+    // later call whose set lives at the same address would reuse the leaves computed for another set.
+    const u64 operation_id = get_next_operation_id();
     for (auto transitions_it = transitions.begin(); transitions_it != transitions.end(); ) {
         auto [state, state_transitions] = *transitions_it;
 
@@ -540,7 +543,8 @@ void NFA::remove_states(std::set<State>& states_to_remove) {
             transitions_it = transitions.erase(transitions_it);
         } else {
             using namespace sylvan;
-            MTBDD new_state_transitions = mtbdd_uapply(state_transitions, TASK(remove_states2_op), reinterpret_cast<u64>(&states_to_remove));
+            MTBDD new_state_transitions = mtbdd_uapplyp(state_transitions, TASK(remove_states2_op), operation_id,
+                                                        reinterpret_cast<u64>(&states_to_remove));
             sylvan::mtbdd_deref(state_transitions);
             sylvan::mtbdd_ref(new_state_transitions);
             transitions[state] = new_state_transitions;
