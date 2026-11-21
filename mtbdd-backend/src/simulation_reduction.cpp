@@ -17,7 +17,7 @@ pruning step is `P(id, <)` of Mayr and Clemente, "Advanced automata minimization
                  there is an a-successor q' of q with p' <= q'.
 
 Every state `q` with `p <= q` accepts a superset of the words `p` accepts. `reduce_nfa_by_forward_simulation`
-applies, in this order, four language-preserving steps:
+applies, in this order, five language-preserving steps:
 
 On a deterministic automaton (at most one initial state and one destination per state and symbol),
 simulation coincides with language inclusion and minimization is the reduction to apply: such an
@@ -26,6 +26,7 @@ automaton is minimized if `minimize_if_deterministic` is set and returned unchan
 | Step | Rewrite |
 | --- | --- |
 | useless states | remove states from which no final state is reachable (`remove_nonfinishing_states`) |
+| bisimulation | merge every class of bisimilar states into its smallest state (`quotient_by_bisimulation`); cheap, and it shrinks the input of the quadratic simulation |
 | quotient | merge every class of simulation-equivalent states (`p <= q` and `q <= p`) into its smallest state |
 | pruning | drop a destination `s` of a transition (and an initial state `s`) if the same set contains a `t` with `s < t` (strictly) |
 | unreachable states | remove states not reachable from an initial state |
@@ -269,6 +270,94 @@ static bool is_nfa_deterministic(const NFA& nfa) {
     return true;
 }
 
+/* Maps every destination of a leaf through `destination_map` (state -> state), removing duplicates. */
+struct Destination_Map_Info {
+    const std::unordered_map<State, State>* destination_map;
+};
+
+TASK_DECL_2(MTBDD, map_destinations_op, MTBDD, size_t);
+TASK_IMPL_2(MTBDD, map_destinations_op, MTBDD, dd, size_t, param) {
+    if (dd == sylvan::mtbdd_false) return sylvan::mtbdd_false;
+    if (!sylvan::mtbdd_isleaf(dd)) return sylvan::mtbdd_invalid;
+    auto info = reinterpret_cast<const Destination_Map_Info*>(param);
+    auto leaf_contents = reinterpret_cast<Transition_Destination_Set*>(sylvan::mtbdd_getvalue(dd));
+    std::vector<State> mapped_destinations;
+    for (State destination : leaf_contents->destination_set) mapped_destinations.push_back(info->destination_map->at(destination));
+    std::sort(mapped_destinations.begin(), mapped_destinations.end());
+    mapped_destinations.erase(std::unique(mapped_destinations.begin(), mapped_destinations.end()), mapped_destinations.end());
+    if (mapped_destinations.empty()) return sylvan::mtbdd_false;
+    Transition_Destination_Set mapped_leaf_contents(std::move(mapped_destinations));
+    return make_set_leaf(&mapped_leaf_contents);
+}
+
+struct Hash_Block_Signature {
+    size_t operator()(const std::pair<State, MTBDD>& signature) const {
+        return std::hash<u64>()(static_cast<u64>(signature.first) * 0x9E3779B97F4A7C15ull ^ signature.second);
+    }
+};
+
+/*
+The quotient of `nfa` by its maximal bisimulation, computed by signature refinement: starting from the
+partition into final and nonfinal states, a state's signature is its block together with its transition
+MTBDD with every destination replaced by the smallest state of the destination's block (MTBDDs are
+canonical, so equal signatures are equal handles); blocks are refined until their number is stable. Every
+block is merged into its smallest state. Bisimilar states are simulation-equivalent, so the quotient
+keeps every simulation-equivalence class that matters to `reduce_nfa_by_forward_simulation`.
+*/
+NFA quotient_by_bisimulation(const NFA& nfa) {
+    LACE_ME;
+    std::vector<State> states(nfa.states.begin(), nfa.states.end());
+    std::unordered_map<State, State> block_of_state;  // the smallest state of the block
+    State smallest_final = -1, smallest_nonfinal = -1;
+    for (State state : states) {
+        State& smallest = nfa.final_states.contains(state) ? smallest_final : smallest_nonfinal;
+        if (smallest < 0) smallest = state;
+        block_of_state[state] = smallest;
+    }
+    u64 block_count = (smallest_final >= 0) + (smallest_nonfinal >= 0);
+
+    while (true) {
+        AMAYA_CHECK_INTERRUPT();
+        Destination_Map_Info info = {.destination_map = &block_of_state};
+        const u64 operation_id = get_next_operation_id();
+        std::unordered_map<std::pair<State, MTBDD>, State, Hash_Block_Signature> block_of_signature;
+        std::unordered_map<State, State> refined_block_of_state;
+        u64 pushed_signature_count = 0;
+        for (State state : states) {  // increasing, so the first state of a refined block is its smallest
+            using namespace sylvan;  // mtbdd_uapplyp is a macro
+            MTBDD signature = mtbdd_uapplyp(get_transitions_of_state(nfa, state), TASK(map_destinations_op), operation_id,
+                                            reinterpret_cast<size_t>(&info));
+            mtbdd_refs_push(signature);
+            pushed_signature_count++;
+            auto [block_entry, was_inserted] = block_of_signature.emplace(std::make_pair(block_of_state.at(state), signature), state);
+            refined_block_of_state[state] = block_entry->second;
+        }
+        sylvan::mtbdd_refs_pop(pushed_signature_count);
+        bool is_stable = block_of_signature.size() == block_count;
+        block_count = block_of_signature.size();
+        block_of_state = std::move(refined_block_of_state);
+        if (is_stable) break;
+    }
+
+    NFA quotient(nfa.vars, nfa.var_count);
+    for (State initial_state : nfa.initial_states) quotient.initial_states.insert(block_of_state.at(initial_state));
+    Destination_Map_Info info = {.destination_map = &block_of_state};
+    const u64 operation_id = get_next_operation_id();
+    for (State state : states) {
+        if (block_of_state.at(state) != state) continue;
+        quotient.states.insert(state);
+        if (nfa.final_states.contains(state)) quotient.final_states.insert(state);
+        using namespace sylvan;
+        MTBDD mapped_transitions = mtbdd_uapplyp(get_transitions_of_state(nfa, state), TASK(map_destinations_op), operation_id,
+                                                 reinterpret_cast<size_t>(&info));
+        if (mapped_transitions != mtbdd_false) {
+            mtbdd_ref(mapped_transitions);
+            quotient.transitions[state] = mapped_transitions;
+        }
+    }
+    return quotient;
+}
+
 NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_deterministic) {
     LACE_ME;
     Interrupt_Guard interrupt_guard;
@@ -290,6 +379,9 @@ NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_
     if (useful_nfa.final_states.empty() || (max_states > 0 && useful_nfa.states.size() > max_states)) {
         return useful_nfa;
     }
+
+    // The relation compares pairs of states; merging bisimilar states first is cheap and shrinks it.
+    useful_nfa = quotient_by_bisimulation(useful_nfa);
 
     std::vector<State> state_of_index(useful_nfa.states.begin(), useful_nfa.states.end());
     State_Indexer state_indexer(state_of_index);
