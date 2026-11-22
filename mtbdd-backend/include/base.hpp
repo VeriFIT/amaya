@@ -7,6 +7,7 @@
 #define INTERSECTION_REMOVE_NONFINISHING_STATES 0
 
 #include <chrono>
+#include <functional>
 #include <iostream>
 #include <vector>
 #include <set>
@@ -199,6 +200,14 @@ NFA compute_nfa_intersection(NFA& left, NFA& right);
 void remove_nonfinishing_states(NFA& nfa);
 std::set<State> compute_states_reaching_set(const NFA& nfa, const std::set<State>& states_to_reach);
 NFA determinize_nfa(NFA& nfa);
+
+/*
+The subset construction of determinize_nfa, with `prune_macrostate` (if not null) applied to every macrostate,
+the initial one included, before it is looked up among the known macrostates. The result accepts the language
+of `nfa` if pruning never changes the union of the languages of a macrostate's members.
+*/
+NFA determinize_nfa_with_macrostate_pruning(NFA& nfa, const std::function<void(Macrostate&)>* prune_macrostate);
+
 NFA minimize_hopcroft(NFA& nfa);
 
 /*
@@ -210,6 +219,15 @@ NFA, except for a deterministic `nfa`, which is minimized (a complete minimal DF
 with only the useless states removed.
 */
 NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_deterministic);
+
+/*
+reduce_nfa_by_forward_simulation (without minimization) followed by the subset construction, in which every
+macrostate drops each member whose language is included in that of another member (by the simulation relation
+computed during the reduction; of two simulation-equivalent members the larger state is dropped). The result is
+a complete DFA accepting the language of `nfa`, in general not minimal. Without a relation (a deterministic
+`nfa`, or more than `max_states` states), it is determinize_nfa of the reduced automaton.
+*/
+NFA determinize_nfa_pruned_by_simulation(NFA& nfa, u64 max_states);
 
 void collect_reachable_states_from_mtbdd_leaves(sylvan::MTBDD root, std::set<State>& output);
 

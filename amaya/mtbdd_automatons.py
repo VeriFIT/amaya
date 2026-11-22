@@ -167,11 +167,10 @@ class MTBDD_NFA(NFA):
         # @Todo: Before simplification, this method previously called: mtbdd union, mtbdd rename, get leaves.
         #        Check whether any of these API calls can be removed.
         logger.debug('Performing MTBDD NFA determinization. Automaton size: #states=%d', len(self.states))
-        nfa = self
         if solver_config.backend.reduce_by_simulation_before_determinization:
-            nfa = MTBDDTransitionFn.reduce_nfa_by_forward_simulation(self, solver_config.backend.simulation_reduction_max_states)
-            logger.debug('Simulation reduction before determinization: #states %d -> %d', len(self.states), len(nfa.states))
-        dfa = MTBDDTransitionFn.determinize(nfa)
+            dfa = MTBDDTransitionFn.determinize_pruned_by_simulation(self, solver_config.backend.simulation_reduction_max_states)
+        else:
+            dfa = MTBDDTransitionFn.determinize(self)
         logger.debug('MTBDD NFA determinization done. Results size: #states=%d', len(dfa.states))
         return dfa
 

@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <functional>
 
 #include <sylvan.h>
 #include "../include/bit_set.hpp"
@@ -134,6 +135,7 @@ struct Determinization_Context {
     std::vector<std::pair<const Macrostate, State>*>& work_queue;
     bool is_trapstate_needed;
     State trapstate_handle;
+    const std::function<void(Macrostate&)>* prune_macrostate;  // Applied to every macrostate before it is interned; may be null
 };
 
 #endif

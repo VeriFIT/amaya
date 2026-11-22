@@ -43,7 +43,10 @@ class BackendConfig(object):
     (EXPERIMENTAL, disabled by default) Before `MTBDD_NFA.determinize`, reduce the NFA by the maximal
     forward direct simulation (`libamaya.reduce_nfa_by_forward_simulation`, see
     mtbdd-backend/src/simulation_reduction.cpp): remove useless states, merge simulation-equivalent
-    states, prune destinations strictly simulated by another destination of the same transition.
+    states, prune destinations strictly simulated by another destination of the same transition. The subset
+    construction then drops from every macrostate each member whose language is included in that of another
+    member by the same relation (`libamaya.determinize_nfa_pruned_by_simulation`); the resulting DFA accepts
+    the same language and is in general not minimal.
     """
 
     reduce_by_simulation_before_projection: bool = False

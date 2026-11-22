@@ -4,6 +4,8 @@
 #include "../include/sylvan-extra.h"
 
 #include <algorithm>
+#include <functional>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -38,6 +40,11 @@ traversal of the two transition MTBDDs that compares the destination sets at eve
 so no MTBDD is built while the relation is computed. The matrix has |Q|^2 bits and every pass
 checks every pair still in the relation; automata with more than `max_states` states (after the first step) skip the
 relation and keep only the first step.
+
+`determinize_nfa_pruned_by_simulation` keeps the relation of the reduction and passes the subset construction a
+pruning of every macrostate: a member `p` is dropped if another member `q` has `p < q`, or `p` and `q` are
+equivalent and `q` is the smaller state. The reduction preserves the language of every remaining state, so the
+relation still implies language inclusion among them, and the union of the members' languages is unchanged.
 */
 
 struct Simulation_Relation {
@@ -358,7 +365,57 @@ NFA quotient_by_bisimulation(const NFA& nfa) {
     return quotient;
 }
 
+/*
+The relation computed by a reduction, over the states of the automaton it was computed on (a superset of the
+states of the reduced automaton, whose per-state languages it preserves).
+*/
+struct Computed_Simulation {
+    std::vector<State> state_of_index;
+    State_Indexer state_indexer;
+    Simulation_Relation relation;
+};
+
+static NFA reduce_nfa_by_forward_simulation_keeping_relation(NFA& nfa, u64 max_states, bool minimize_if_deterministic,
+                                                             std::optional<Computed_Simulation>* computed_simulation);
+
 NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_deterministic) {
+    return reduce_nfa_by_forward_simulation_keeping_relation(nfa, max_states, minimize_if_deterministic, nullptr);
+}
+
+NFA determinize_nfa_pruned_by_simulation(NFA& nfa, u64 max_states) {
+    std::optional<Computed_Simulation> computed_simulation;
+    NFA reduced = reduce_nfa_by_forward_simulation_keeping_relation(nfa, max_states, false, &computed_simulation);
+    if (!computed_simulation.has_value()) return determinize_nfa(reduced);
+
+    const State_Indexer& state_indexer = computed_simulation->state_indexer;
+    const Simulation_Relation& relation = computed_simulation->relation;
+    std::vector<s64> member_indices;
+    std::function<void(Macrostate&)> prune_macrostate = [&](Macrostate& macrostate) {
+        if (macrostate.size() < 2) return;
+        member_indices.clear();
+        for (State member : macrostate) member_indices.push_back(state_indexer.get_index(member));
+
+        // Members are sorted, so of two equivalent members the one at the larger position is dropped. The kept
+        // members include a maximal member above every dropped one, so the union of languages is unchanged.
+        Macrostate kept_members;
+        for (u64 position = 0; position < macrostate.size(); position++) {
+            s64 index = member_indices[position];
+            bool is_member_dropped = false;
+            for (u64 other_position = 0; index >= 0 && other_position < macrostate.size() && !is_member_dropped; other_position++) {
+                s64 other_index = member_indices[other_position];
+                if (other_position == position || other_index < 0) continue;
+                if (!relation.contains(index, other_index)) continue;
+                is_member_dropped = !relation.contains(other_index, index) || other_position < position;
+            }
+            if (!is_member_dropped) kept_members.push_back(macrostate[position]);
+        }
+        macrostate.swap(kept_members);
+    };
+    return determinize_nfa_with_macrostate_pruning(reduced, &prune_macrostate);
+}
+
+static NFA reduce_nfa_by_forward_simulation_keeping_relation(NFA& nfa, u64 max_states, bool minimize_if_deterministic,
+                                                             std::optional<Computed_Simulation>* computed_simulation) {
     LACE_ME;
     Interrupt_Guard interrupt_guard;
 
@@ -437,5 +494,10 @@ NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_
     std::set_difference(quotient.states.begin(), quotient.states.end(), reachable_states.begin(), reachable_states.end(),
                         std::inserter(unreachable_states, unreachable_states.begin()));
     if (!unreachable_states.empty()) quotient.remove_states(unreachable_states);
+    if (computed_simulation != nullptr) {
+        computed_simulation->emplace(Computed_Simulation{.state_of_index = std::move(state_of_index),
+                                                         .state_indexer = std::move(state_indexer),
+                                                         .relation = std::move(relation)});
+    }
     return quotient;
 }

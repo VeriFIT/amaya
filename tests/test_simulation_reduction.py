@@ -127,6 +127,46 @@ def test_determinization_with_reduction_accepts_the_same_language(simulation_red
         assert_same_language(dfa_without_reduction.complement(), dfa_with_reduction.complement())
 
 
+def _minimal_dfa_state_count(nfa: MTBDD_NFA) -> int:
+    return len(MTBDDTransitionFn.minimize_hopcroft(MTBDDTransitionFn.determinize(nfa)).states)
+
+
+def test_macrostate_member_simulated_by_another_member_is_dropped(simulation_reduction_disabled):
+    # 0 and 1 are incomparable initial states. 2 accepts (1,1) only and 3 accepts (1,1) and (1,0), so 2 < 3;
+    # the macrostate {2, 3} reached on (0,0) is pruned to {3}, which (1,0) reaches on its own.
+    nfa = make_nfa(states={0, 1, 2, 3, 4}, initial_states={0, 1}, final_states={4},
+                   transitions=[(0, (0, 0), 2), (0, (1, 1), 4), (1, (0, 0), 3), (1, (0, 1), 4), (1, (1, 0), 3),
+                                (2, (1, 1), 4), (3, (1, 1), 4), (3, (1, 0), 4)])
+
+    dfa_without_pruning = MTBDDTransitionFn.determinize(MTBDDTransitionFn.reduce_nfa_by_forward_simulation(nfa, max_states=0))
+    dfa_with_pruning = MTBDDTransitionFn.determinize_pruned_by_simulation(nfa, max_states=0)
+
+    assert len(dfa_with_pruning.states) < len(dfa_without_pruning.states)
+    assert_same_language(nfa, dfa_with_pruning)
+
+
+def test_pruned_determinization_of_random_nfas_has_the_same_minimal_dfa(simulation_reduction_disabled):
+    rng = random.Random(20261122)
+    smaller_dfa_count = 0
+    for _ in range(200):
+        state_count = rng.randint(1, 8)
+        states = list(range(state_count))
+        transitions = [(source, symbol, destination) for source in states for symbol in SYMBOLS
+                       for destination in rng.sample(states, rng.randint(0, min(3, state_count)))]
+        initial_states = rng.sample(states, rng.randint(1, min(3, state_count)))
+        nfa = make_nfa(states, initial_states, rng.sample(states, rng.randint(0, state_count)), transitions)
+
+        dfa_without_pruning = MTBDDTransitionFn.determinize(nfa)
+        dfa_with_pruning = MTBDDTransitionFn.determinize_pruned_by_simulation(nfa, max_states=0)
+
+        assert dfa_with_pruning.automaton_type & AutomatonType.DFA
+        assert_same_language(dfa_without_pruning, dfa_with_pruning)
+        assert_same_language(dfa_without_pruning.complement(), dfa_with_pruning.complement())
+        assert _minimal_dfa_state_count(nfa) == len(MTBDDTransitionFn.minimize_hopcroft(dfa_with_pruning).states)
+        smaller_dfa_count += len(dfa_with_pruning.states) < len(dfa_without_pruning.states)
+    assert smaller_dfa_count > 0
+
+
 def test_nfa_without_initial_state_reaching_final_state_keeps_an_initial_state(simulation_reduction_disabled):
     # 2 is final but unreachable from the initial state 0, so every state reachable from 0 is useless.
     nfa = make_nfa(states={0, 1, 2}, initial_states={0}, final_states={2},

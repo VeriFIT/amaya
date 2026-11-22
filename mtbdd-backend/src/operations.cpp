@@ -491,6 +491,7 @@ TASK_IMPL_2(MTBDD, replace_macrostates_with_handles_op, MTBDD, dd, size_t, param
     Macrostate macrostate(leaf_contents->destination_set.begin(), leaf_contents->destination_set.end());
 
     auto ctx = reinterpret_cast<Determinization_Context*>(param);
+    if (ctx->prune_macrostate != nullptr) (*ctx->prune_macrostate)(macrostate);
     auto [known_macrostates_elem, was_inserted] = ctx->known_macrostates.emplace(macrostate, ctx->known_macrostates.size());
 
     if (was_inserted) ctx->work_queue.push_back(&(*known_macrostates_elem));

@@ -136,6 +136,7 @@ cdef extern from "base.hpp":
     NFA c_determinize_nfa "determinize_nfa"(NFA& nfa) except +
     NFA c_minimize_hopcroft "minimize_hopcroft"(NFA& nfa) except +
     NFA c_reduce_nfa_by_forward_simulation "reduce_nfa_by_forward_simulation"(NFA& nfa, u64 max_states, bint minimize_if_deterministic) except +
+    NFA c_determinize_nfa_pruned_by_simulation "determinize_nfa_pruned_by_simulation"(NFA& nfa, u64 max_states) except +
     NFA c_rename_vars "rename_vars"(NFA& nfa, unordered_map[u32, u32]& renaming) except +
 
 
@@ -356,6 +357,17 @@ def minimize_hopcroft(PyNFA nfa):
     result._c_nfa = NULL
     try:
         result._c_nfa = new NFA(c_minimize_hopcroft(nfa._c_nfa[0]))
+    except RuntimeError as err:
+        _reraise_interrupt(err)
+    return result
+
+
+def determinize_nfa_pruned_by_simulation(PyNFA nfa, u64 max_states):
+    result = PyNFA()
+    del result._c_nfa
+    result._c_nfa = NULL
+    try:
+        result._c_nfa = new NFA(c_determinize_nfa_pruned_by_simulation(nfa._c_nfa[0], max_states))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result

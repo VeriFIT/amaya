@@ -855,12 +855,17 @@ NFA compute_nfa_intersection(NFA& left, NFA& right) {
 extern u64 union_applied_cnt;
 
 NFA determinize_nfa(NFA& nfa) {
+    return determinize_nfa_with_macrostate_pruning(nfa, nullptr);
+}
+
+NFA determinize_nfa_with_macrostate_pruning(NFA& nfa, const std::function<void(Macrostate&)>* prune_macrostate) {
     LACE_ME;
     Interrupt_Guard interrupt_guard;
     NFA result(nfa.vars, nfa.var_count);
 
     std::vector<std::pair<const Macrostate, State>*> work_queue;
-    Determinization_Context ctx = {.known_macrostates = {}, .work_queue = work_queue, .is_trapstate_needed=false};
+    Determinization_Context ctx = {.known_macrostates = {}, .work_queue = work_queue, .is_trapstate_needed=false,
+                                   .prune_macrostate = prune_macrostate};
 
     // Speculatively prepare trap state in case it is needed
     {
@@ -873,6 +878,7 @@ NFA determinize_nfa(NFA& nfa) {
     // Prepare intitial state and populate work queue
     {
         Macrostate initial_state(nfa.initial_states.begin(), nfa.initial_states.end());
+        if (prune_macrostate != nullptr) (*prune_macrostate)(initial_state);
         State initial_handle = static_cast<State>(ctx.known_macrostates.size());
         auto emplace_status = ctx.known_macrostates.emplace(initial_state, initial_handle);
         result.initial_states.insert(initial_handle);
