@@ -118,3 +118,29 @@ def test_intersection(automaton_cls: NFA, relation1: Relation, relation2: Relati
             dest_states = set(nfa.get_transition_target(_state, nonaccepting_symbol))
             dest_final_states = nfa.final_states.intersection(dest_states)
             assert len(dest_final_states) == 0
+
+
+def test_intersection_of_complete_dfas_is_a_complete_dfa():
+    import random
+    from amaya.automatons import AutomatonType
+    from amaya.mtbdd_transitions import MTBDDTransitionFn
+    from tests.test_simulation_reduction import SYMBOLS, assert_same_language, make_nfa
+
+    def make_random_complete_dfa(rng: random.Random) -> MTBDD_NFA:
+        states = list(range(rng.randint(1, 6)))
+        transitions = [(source, symbol, destination) for source in states for symbol in SYMBOLS
+                       for destination in rng.sample(states, rng.randint(0, min(2, len(states))))]
+        nfa = make_nfa(states, [0], rng.sample(states, rng.randint(0, len(states))), transitions)
+        return MTBDDTransitionFn.determinize(nfa)
+
+    rng = random.Random(20261122)
+    for _ in range(100):
+        left, right = make_random_complete_dfa(rng), make_random_complete_dfa(rng)
+
+        product = left.intersection(right)
+
+        assert product.automaton_type & AutomatonType.DFA
+        determinized_product = MTBDDTransitionFn.determinize(product)
+        assert_same_language(product.complement(), determinized_product.complement())
+        assert (len(MTBDDTransitionFn.minimize_hopcroft(product).states)
+                == len(MTBDDTransitionFn.minimize_hopcroft(determinized_product).states))
