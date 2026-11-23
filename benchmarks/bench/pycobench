@@ -13,6 +13,14 @@
 #     configuration file.
 #     * The configuration file is a YAML where each engine is given a command
 #       to run (with $1, $2, $3,... denoting input parameters).
+#       Optional keys of an engine:
+#       * time_measured_by_command (bool, default false): the command is not
+#         wrapped by /usr/bin/time; the last three lines of its stderr must
+#         be in the format of `time -p`.
+#       * timeout_kill_cmd (shell command): executed after a timeout, once the
+#         process tree of the command has been killed by SIGKILL.
+#       Each command and timeout_kill_cmd get the environment variable
+#       PYCOBENCH_TASK_ID, unique to one execution of one task.
 #   * Benchmarks are provided on standard input, one per line.  Each line
 #     contains a whitespace-separated list of parameters (which are then input
 #     into the engine commands in the place of $1, $2, $3, ...)
@@ -43,6 +51,7 @@ import subprocess
 import sys
 import termcolor
 import threading
+import uuid
 import yaml
 
 # thread-safe queue for distributing tasks
@@ -68,6 +77,12 @@ g_time_cmd = ['/usr/bin/time', '-p']
 g_timeout_cmd = ['timeout', '-s', 'KILL']
 # the return code of the timeout command when it times out
 TIMEOUT_TIMEOUT_RETCODE = 124
+
+# Name of the environment variable that holds an identifier unique to one
+# execution of one task.  It is set for the command of the task and for the
+# method's `timeout_kill_cmd`.  A command that starts a container uses it as
+# the container name, so that `timeout_kill_cmd` can address the container.
+TASK_ID_ENVIRONMENT_VARIABLE = 'PYCOBENCH_TASK_ID'
 
 # limit on the size of an output on stdout and stderr
 OUTPUT_LIMIT = 16384
@@ -149,16 +164,58 @@ in a subprocesses ends with an error"""
 
 
 ###########################################
-def run_subproc_systime(cmd):
-    """run_subproc(cmd) -> dict()
+def run_timeout_kill_cmd(timeout_kill_cmd, task_environment):
+    """run_timeout_kill_cmd(timeout_kill_cmd, task_environment) -> None
+
+Runs the method's `timeout_kill_cmd` (a shell command) after the process tree
+of a timed-out task has been killed.  The process tree contains only processes
+that are descendants of pycobench; processes started on behalf of the task by
+a daemon (e.g., a container started by `podman run`, whose processes are
+children of conmon) are not in it and must be killed by this command.
+"""
+    try:
+        kill_proc = subprocess.run(['sh', '-c', timeout_kill_cmd],
+                                   env=task_environment,
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   timeout=60)
+        if kill_proc.returncode != 0:
+            sys.stderr.write("Warning: timeout_kill_cmd \"{}\" for task {} "
+                             "returned {}: {}\n".format(
+                                 timeout_kill_cmd,
+                                 task_environment[TASK_ID_ENVIRONMENT_VARIABLE],
+                                 kill_proc.returncode,
+                                 kill_proc.stderr.decode().strip()))
+    except Exception as ex:
+        sys.stderr.write("Warning: timeout_kill_cmd \"{}\" for task {} "
+                         "failed: {}\n".format(
+                             timeout_kill_cmd,
+                             task_environment[TASK_ID_ENVIRONMENT_VARIABLE],
+                             ex))
+
+
+###########################################
+def run_subproc_systime(cmd, method_config):
+    """run_subproc_systime(cmd, method_config) -> dict()
 
 Runs a command as a subprocess and collects results.  The time consumed is
-measured using system "time" command.
+measured using system "time" command.  If the method sets
+`time_measured_by_command: true`, the command is not wrapped by "time" and the
+last three lines of its stderr must be the output of `time -p` (or an
+equivalent) run by the command itself.  This is required when the measured
+process is not a descendant of pycobench (e.g., it runs in a container).
 """
-    cmd = g_time_cmd + cmd
+    if not method_config.get('time_measured_by_command', False):
+        cmd = g_time_cmd + cmd
+
+    task_environment = dict(os.environ)
+    task_environment[TASK_ID_ENVIRONMENT_VARIABLE] = \
+        'pycobench-{}-{}'.format(os.getpid(), uuid.uuid4().hex[:16])
+
     proc = subprocess.Popen(cmd,
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE
+                            stderr=subprocess.PIPE,
+                            env=task_environment
                             )
     try:
         outs, errs = proc.communicate(timeout=g_timeout)
@@ -167,6 +224,10 @@ measured using system "time" command.
             kill_proc_tree(proc.pid, sig=signal.SIGKILL, include_parent=True)
         except Exception:
             pass   # do not care
+
+        timeout_kill_cmd = method_config.get('timeout_kill_cmd')
+        if timeout_kill_cmd:
+            run_timeout_kill_cmd(timeout_kill_cmd, task_environment)
 
         raise
 
@@ -247,7 +308,7 @@ Executes one benchmark.
 
     try:
         # result = run_subproc(cmd)
-        result = run_subproc_systime(cmd)
+        result = run_subproc_systime(cmd, g_cmd_dict[name])
         return result
     except subprocess.TimeoutExpired:
         return {'timeout': True}

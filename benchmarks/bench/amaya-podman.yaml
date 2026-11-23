@@ -1,0 +1,24 @@
+# Amaya at tag cav_2024 vs. branch devel, each in a podman container.
+# Images: benchmarks/containers/build-images.sh
+#   (localhost/amaya-bench:cav_2024, localhost/amaya-bench:devel)
+#
+# Keys used besides `cmd` (see benchmarks/bench/pycobench):
+#   time_measured_by_command: the wrapper measures CPU time inside the container.
+#   timeout_kill_cmd: run after a timeout; removes the container with SIGKILL
+#     sent from the host. Required because the cav_2024 version ignores the
+#     signals delivered to it otherwise, and because killing the `podman run`
+#     client does not stop the container.
+#
+# Options are those of the cav_2024 image's ENTRYPOINT in the first Dockerfile
+# (commit 514e9e5): `--fast -O all get-sat`. `--fast` selects the MTBDD backend
+# and Hopcroft's minimization in both revisions.
+
+amaya-cav_2024:
+  cmd: ../bin/amaya-podman-wrap.sh localhost/amaya-bench:cav_2024 $1 --fast -O all
+  time_measured_by_command: true
+  timeout_kill_cmd: podman rm -f -t 0 "$PYCOBENCH_TASK_ID"
+
+amaya-devel:
+  cmd: ../bin/amaya-podman-wrap.sh localhost/amaya-bench:devel $1 --fast -O all
+  time_measured_by_command: true
+  timeout_kill_cmd: podman rm -f -t 0 "$PYCOBENCH_TASK_ID"
