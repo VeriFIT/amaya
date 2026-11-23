@@ -1,6 +1,10 @@
 FROM debian
-RUN apt update
-RUN apt install -y gcc g++ cmake make git python3 python3-pip python3-dev libgmp-dev libhwloc-dev pkg-config
+# Update and install in one layer: with separate layers, a cached `apt update`
+# layer holds a stale package index and a rebuilt `apt install` layer requests
+# package versions that the mirror no longer serves (HTTP 404).
+RUN apt-get update \
+    && apt-get install -y gcc g++ cmake make git python3 python3-pip python3-dev libgmp-dev libhwloc-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN git clone https://github.com/trolando/sylvan.git sylvan
 RUN mkdir -p sylvan/build
