@@ -852,7 +852,16 @@ def evaluate_binary_conjunction_expr(expr: AST_Connective,
 
 
 def split_conjunction_to_shards(and_expr: AST_Connective) -> Tuple[List[Tuple[int, ...]], List[Tuple[Var, ...]]]:
+    """
+    Partition the children of `and_expr` into shards: two children are in the same shard iff they are
+    connected by a chain of children sharing a variable.
+
+    Returns the child indices of each shard and the variables of each shard, in matching order. Every
+    child is in exactly one shard. Children that reference no variable (`BoolLiteral`, ground atoms)
+    form one additional shard with no variables.
+    """
     variable_partitions: Dict[Var, Tuple[Set[Var], Set[int]]] = {var: ({var}, set()) for var in and_expr.referenced_vars}
+    indices_of_children_without_vars: List[int] = []
 
     def update_partitions(joining_vars: Iterable[Var], atom_idx: int):
         partition_union: Set[Var] = set()
@@ -866,16 +875,34 @@ def split_conjunction_to_shards(and_expr: AST_Connective) -> Tuple[List[Tuple[in
 
     for node_idx, node in enumerate(and_expr.children):
         match node:
+            case Var():
+                # A Boolean variable asserted as a conjunct.
+                node_vars: Iterable[Var] = (node,)
             case Relation() | Congruence():
-                update_partitions(joining_vars=node.vars, atom_idx=node_idx)
+                node_vars = node.vars
             case AST_Connective() | AST_Negation() | AST_Quantifier():
-                update_partitions(joining_vars=node.referenced_vars, atom_idx=node_idx)
+                node_vars = node.referenced_vars
+            case BoolLiteral():
+                node_vars = ()
+            case _:
+                raise ValueError(f'Cannot assign the conjunct {node} to a shard: unexpected node type {type(node)}.')
 
-    partitions_and_atom_indices = {}
+        if node_vars:
+            update_partitions(joining_vars=node_vars, atom_idx=node_idx)
+        else:
+            indices_of_children_without_vars.append(node_idx)
+
+    partitions_and_atom_indices: Dict[Tuple[Var, ...], Tuple[int, ...]] = {}
     for partition, atom_indices in variable_partitions.values():
         partitions_and_atom_indices[tuple(sorted(partition))] = tuple(sorted(atom_indices))
 
-    return list(partitions_and_atom_indices.values()), list(partitions_and_atom_indices.keys())
+    shard_child_indices = list(partitions_and_atom_indices.values())
+    shard_vars = list(partitions_and_atom_indices.keys())
+    if indices_of_children_without_vars:
+        shard_child_indices.append(tuple(indices_of_children_without_vars))
+        shard_vars.append(tuple())
+
+    return shard_child_indices, shard_vars
 
 
 def convert_binary_model_into_decadic(model: Tuple[LSBF_AlphabetSymbol, ...],
