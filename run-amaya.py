@@ -349,12 +349,6 @@ argparser.add_argument('-m',
                        default=None,
                        help='Minimize the automatons eagerly using the specified minimization algorithm.')
 
-argparser.add_argument('--use-bit-sets',
-                       action='store_true',
-                       dest='use_bit_sets',
-                       default=False,
-                       help='Use bit sets when performing padding closure.')
-
 argparser.add_argument('--shard',
                        dest='sharding_enabled',
                        action='store_true',
@@ -670,11 +664,6 @@ elif args.minimization_method == 'brzozowski':
         sys.exit(1)
 elif 'fast' not in args:
     solver_config.minimization_method = MinimizationAlgorithms.NONE
-
-if args.use_bit_sets:
-    from amaya.mtbdd_transitions import MTBDDTransitionFn
-    MTBDDTransitionFn.enable_bit_sets()
-    solver_config.backend.use_bit_set_pad_closure = True
 
 solver_config.optimizations.allow_sharding = args.sharding_enabled
 

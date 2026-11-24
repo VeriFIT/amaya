@@ -77,7 +77,6 @@ NFA construct_atom_conjunction_intersected_with_nfa(Serialized_Quantified_Atom_C
                                                     bool stop_after_first_accepting_state);
 NFA perform_pad_closure_using_bit_sets(NFA& nfa);
 
-void amaya_enable_bit_sets();
 
 void shutdown_machinery();
 void init_machinery();

@@ -1482,13 +1482,8 @@ NFA build_nfa_with_formula_entailement(const Formula* formula, Conjunction_State
     }
 
     if (!formula->bound_vars.empty()) {
-        if (g_solver_context->config.is_feature_enabled(SOLVER_CONFIG_USE_BIT_SETS)) {
-            NFA result = do_pad_closure_using_bit_sets(&nfa, g_solver_context->bit_set_alloc);
-            return determinize_nfa(result);
-        }
-        // Use the old implementation
-        nfa.perform_pad_closure();
-        return determinize_nfa(nfa);
+        NFA result = do_pad_closure_using_bit_sets(&nfa, g_solver_context->bit_set_alloc);
+        return determinize_nfa(result);
     }
 
     return nfa;

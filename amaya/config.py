@@ -32,6 +32,10 @@ class BackendConfig(object):
     re-sorting a vector that grows with the frontier, which is where the old representation spent
     its time. Only worth turning off for automata so large that a full |Q|-bit frontier leaf costs
     more to copy than the handful of states the frontier actually holds.
+
+    Applies to the pad closure called from Python (`MTBDD_NFA.perform_pad_closure`). The pad closure
+    inside the C++ lazy construction (`build_nfa_with_formula_entailement` in
+    mtbdd-backend/src/lazy.cpp) always uses bit sets.
     """
 
 

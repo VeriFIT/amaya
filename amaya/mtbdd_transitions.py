@@ -507,7 +507,3 @@ class MTBDDTransitionFn():
         var_ids = [var.id for var in eq.vars]
         pynfa = libamaya.construct_nfa_from_eq(list(eq.coefs), eq.rhs, var_ids)
         return _nfa_from_pynfa(pynfa, alphabet)
-
-    @staticmethod
-    def enable_bit_sets():
-        libamaya.enable_bit_sets()

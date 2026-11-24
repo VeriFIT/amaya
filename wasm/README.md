@@ -120,5 +120,4 @@ are drawn.
   `MemoryError: std::bad_alloc`.
 - A WebAssembly computation cannot be interrupted; `timeoutMs` terminates the worker, so the next call
   pays the start-up cost (about 2 s) again.
-- Options that change process-wide backend state (for example `--use-bit-sets`) stay in effect for the
-  lifetime of the worker.
+- Options that change process-wide backend state stay in effect for the lifetime of the worker.

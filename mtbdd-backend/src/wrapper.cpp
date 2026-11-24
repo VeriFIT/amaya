@@ -106,7 +106,7 @@ void init_machinery()
     sylvan_init_mtbdd();
 
     // Initialize leaf type for leaves containing sets - represents outgoing transition from a state
-    g_solver_context = new Solver_Context{};  // Value-initialize: config.flags must not be indeterminate
+    g_solver_context = new Solver_Context{};  // Value-initialize: no member may be indeterminate
     Set_Leaf::init_set_leaf(&g_solver_context->leaf_id_store);
     Bit_Set_Leaf::init_bit_set_leaf(&g_solver_context->leaf_id_store);
 
@@ -948,8 +948,4 @@ NFA construct_atom_conjunction_intersected_with_nfa(Serialized_Quantified_Atom_C
     for (auto& [atom_state_handle, transitions] : atom_transitions_by_handle) mtbdd_deref(transitions);
 
     return result;
-}
-
-void amaya_enable_bit_sets() {
-    g_solver_context->config.enable_feature(SOLVER_CONFIG_USE_BIT_SETS);
 }

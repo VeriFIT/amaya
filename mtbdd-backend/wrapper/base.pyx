@@ -85,7 +85,6 @@ cdef extern from "wrapper.hpp":
     NFA c_construct_dfa_for_atom_conjunction "construct_dfa_for_atom_conjunction"(Serialized_Quantified_Atom_Conjunction* raw_formula, bint stop_after_first_accepting_macrostate) except +
     NFA c_construct_atom_conjunction_intersected_with_nfa "construct_atom_conjunction_intersected_with_nfa"(Serialized_Quantified_Atom_Conjunction* raw_conjunction, NFA& nfa, bint stop_after_first_accepting_state) except +
     NFA c_perform_pad_closure_using_bit_sets "perform_pad_closure_using_bit_sets"(NFA& nfa) except +
-    void c_amaya_enable_bit_sets "amaya_enable_bit_sets"()
 
 
 cdef extern from "base.hpp":
@@ -399,9 +398,6 @@ def perform_pad_closure_using_bit_sets(PyNFA nfa):
         _reraise_interrupt(err)
     return result
 
-
-def enable_bit_sets():
-    c_amaya_enable_bit_sets()
 
 
 def construct_nfa_from_ineq(coefs, s64 rhs, vars):
