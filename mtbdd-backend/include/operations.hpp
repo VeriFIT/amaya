@@ -117,8 +117,19 @@ struct Intersection_Discovery {
     State handle;
 };
 
+struct Product_State_Hash {
+    std::size_t operator()(const std::pair<State, State>& product_state) const {
+        // Splitmix64 finalizer over both components: product states of one intersection have small, dense handles.
+        u64 mixed = static_cast<u64>(product_state.first) * 0x9e3779b97f4a7c15ULL ^ static_cast<u64>(product_state.second);
+        mixed = (mixed ^ (mixed >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebULL;
+        return static_cast<std::size_t>(mixed ^ (mixed >> 31));
+    }
+};
+
 struct Intersection_Info2 {
-    std::map<std::pair<State, State>, State> seen_products;
+    // Only looked up and inserted into, never iterated; handles are assigned in insertion order.
+    std::unordered_map<std::pair<State, State>, State, Product_State_Hash> seen_products;
     std::vector<Intersection_Discovery>& work_queue;
 
 #if INTERSECTION_DETECT_STATES_WITH_NO_POST
