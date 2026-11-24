@@ -126,6 +126,13 @@ class Asserted_Model_Properties:
     allowed to drop the variable's binder, or the earlier reference is left dangling with none.
     """
 
+    vars_occurring_as_bool_atoms: set[Var] = field(default_factory=set)
+    """
+    Variables that occur as a Boolean atom (`Var` node) anywhere in the formula. Aliases are substituted
+    into Relations and Congruences only, so an alias for such a variable must not drop its binder: the
+    Boolean atom would be left with no binder. Recomputed on every top-level call.
+    """
+
     def insert_stack(self):
         self.equations.append([])
         self.bool_atom_values.append(dict())
@@ -475,6 +482,11 @@ def _register_unresolved_equation(equation: Relation, assertions: Asserted_Model
     if elim_var in assertions.vars_referenced_unsubstituted:
         return None
 
+    # A Boolean equation `(= a b)` is represented as the Relation `a - b = 0`. The alias is applied to
+    # Relations and Congruences only, never to the Boolean atoms of `elim_var`, so its binder must stay.
+    if elim_var in assertions.vars_occurring_as_bool_atoms:
+        return None
+
     if assertions.no_branch_or_negation_crossed_since_binder_of(elim_var):
         # the alias must stay visible for the whole body of elim_var's binder.
         elim_body_depth = cast(int, assertions.find_quantifier_scope_binding_var(elim_var))
@@ -596,7 +608,22 @@ def simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: As
     _count_var_uses_excluding_hard_bounds(root_node, assertions.var_uses_excluding_hard_bounds)
     assertions.var_uses_total.clear()
     _count_all_var_uses(root_node, assertions.var_uses_total)
+    assertions.vars_occurring_as_bool_atoms.clear()
+    _collect_vars_occurring_as_bool_atoms(root_node, assertions.vars_occurring_as_bool_atoms)
     return _simplify_formula_using_model_properties(root_node, assertions)
+
+
+def _collect_vars_occurring_as_bool_atoms(root_node: ASTp_Node, vars_occurring_as_bool_atoms: set[Var]) -> None:
+    match root_node:
+        case Var():
+            vars_occurring_as_bool_atoms.add(root_node)
+        case AST_Connective():
+            for child in root_node.children:
+                _collect_vars_occurring_as_bool_atoms(child, vars_occurring_as_bool_atoms)
+        case AST_Negation() | AST_Quantifier():
+            _collect_vars_occurring_as_bool_atoms(root_node.child, vars_occurring_as_bool_atoms)
+        case _:
+            pass
 
 
 def _is_equation(node: ASTp_Node) -> bool:
