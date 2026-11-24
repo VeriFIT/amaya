@@ -22,6 +22,16 @@ Occurrence shapes that abort the rewrite for `v` (the formula is left unchanged 
     - more than `|L| + |U|` atoms produced, i.e. `|L| * |U| > |L| + |U|` (see `_produces_no_more_atoms`).
 
 When the solution domain is the natural numbers, `v >= 0` is added to the lower bounds of `v`.
+
+Hoisting of nested existential quantifiers (`_hoist_nested_existentials`): a conjunct of the body that
+is an existential quantifier referencing a variable bound by the outer quantifier blocks elimination of
+that variable. Over disjoint bound variables that are not referenced outside the nested quantifier,
+
+    exists V. (and  A  (exists W. B))   <=>   exists V, W. (and  A  B)
+
+The pass applies the rewrite repeatedly, eliminates over the hoisted form and keeps it only if it
+eliminates strictly more variables than elimination over the unhoisted form; otherwise the unhoisted
+result is kept, so the scoping established by miniscoping is not changed without an elimination gain.
 """
 
 from __future__ import annotations
@@ -195,6 +205,83 @@ def _eliminate_vars_of_quantifier(bound_vars: Tuple[Var, ...], body: ASTp_Node, 
     return current_body, tuple(remaining_bound_vars)
 
 
+def _conjuncts_of(node: ASTp_Node) -> Tuple[ASTp_Node, ...]:
+    if isinstance(node, AST_Connective) and node.type == Connective_Type.AND:
+        return node.children
+    return (node,)
+
+
+def _can_hoist_nested_quantifier(nested_quantifier: AST_Quantifier, outer_bound_vars: List[Var],
+                                 other_conjuncts: List[ASTp_Node]) -> bool:
+    """
+    The nested quantifier is hoisted only if it references an outer bound variable (otherwise hoisting
+    cannot enable an elimination) and hoisting captures no variable: none of its bound variables is an
+    outer bound variable or is referenced by another conjunct.
+    """
+    if not any(_references_var(nested_quantifier, outer_var) for outer_var in outer_bound_vars):
+        return False
+    for nested_bound_var in nested_quantifier.bound_vars:
+        if nested_bound_var in outer_bound_vars:
+            return False
+        if any(_references_var(other_conjunct, nested_bound_var) for other_conjunct in other_conjuncts):
+            return False
+    return True
+
+
+def _hoist_nested_existentials(bound_vars: Tuple[Var, ...], body: ASTp_Node) -> Optional[Tuple[Tuple[Var, ...], ASTp_Node]]:
+    """
+    Rewrites `exists V. (and A (exists W. B))` into `exists V, W. (and A B)` for every admissible nested
+    quantifier (see `_can_hoist_nested_quantifier`), repeatedly, so that quantifiers nested in a hoisted
+    body are considered as well. Returns None if no quantifier was hoisted.
+    """
+    hoisted_bound_vars = list(bound_vars)
+    conjuncts = list(_conjuncts_of(body))
+    hoisted_any_quantifier = False
+
+    hoisted_in_this_round = True
+    while hoisted_in_this_round:
+        hoisted_in_this_round = False
+        for conjunct_index, conjunct in enumerate(conjuncts):
+            if not isinstance(conjunct, AST_Quantifier):
+                continue
+            other_conjuncts = conjuncts[:conjunct_index] + conjuncts[conjunct_index + 1:]
+            if not _can_hoist_nested_quantifier(conjunct, hoisted_bound_vars, other_conjuncts):
+                continue
+            conjuncts = other_conjuncts + list(_conjuncts_of(conjunct.child))
+            hoisted_bound_vars.extend(conjunct.bound_vars)
+            hoisted_any_quantifier = True
+            hoisted_in_this_round = True
+            break
+
+    if not hoisted_any_quantifier:
+        return None
+    return tuple(hoisted_bound_vars), _make_and(conjuncts)
+
+
+def _eliminate_vars_of_quantifier_with_hoisting(bound_vars: Tuple[Var, ...], body: ASTp_Node, var_table: Dict[Var, VarInfo],
+                                                quantified_vars_are_nonnegative: bool) -> Tuple[ASTp_Node, Tuple[Var, ...]]:
+    """
+    Eliminates over the unhoisted and the hoisted form (see the module docstring) and returns the result
+    of the form in which strictly more variables were eliminated, preferring the unhoisted form on ties.
+    """
+    unhoisted_body, unhoisted_remaining_vars = _eliminate_vars_of_quantifier(bound_vars, body, var_table,
+                                                                             quantified_vars_are_nonnegative)
+
+    hoisting_result = _hoist_nested_existentials(bound_vars, body)
+    if hoisting_result is None:
+        return unhoisted_body, unhoisted_remaining_vars
+
+    hoisted_bound_vars, hoisted_body = hoisting_result
+    hoisted_result_body, hoisted_remaining_vars = _eliminate_vars_of_quantifier(hoisted_bound_vars, hoisted_body, var_table,
+                                                                                quantified_vars_are_nonnegative)
+
+    unhoisted_eliminated_var_count = len(bound_vars) - len(unhoisted_remaining_vars)
+    hoisted_eliminated_var_count = len(hoisted_bound_vars) - len(hoisted_remaining_vars)
+    if hoisted_eliminated_var_count > unhoisted_eliminated_var_count:
+        return hoisted_result_body, hoisted_remaining_vars
+    return unhoisted_body, unhoisted_remaining_vars
+
+
 def eliminate_unit_coefficient_vars_by_fourier_motzkin(root: ASTp_Node, var_table: Dict[Var, VarInfo],
                                                        quantified_vars_are_nonnegative: bool = False) -> ASTp_Node:
     """
@@ -229,8 +316,8 @@ def eliminate_unit_coefficient_vars_by_fourier_motzkin(root: ASTp_Node, var_tabl
 
         case AST_Quantifier():
             new_child = eliminate_unit_coefficient_vars_by_fourier_motzkin(root.child, var_table, quantified_vars_are_nonnegative)
-            new_child, remaining_bound_vars = _eliminate_vars_of_quantifier(root.bound_vars, new_child, var_table,
-                                                                           quantified_vars_are_nonnegative)
+            new_child, remaining_bound_vars = _eliminate_vars_of_quantifier_with_hoisting(root.bound_vars, new_child, var_table,
+                                                                                         quantified_vars_are_nonnegative)
 
             if not remaining_bound_vars or isinstance(new_child, BoolLiteral):
                 return new_child

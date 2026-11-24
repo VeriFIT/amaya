@@ -1,7 +1,10 @@
 from amaya import dsl
 from amaya.preprocessing.conditional_equality_resolution import fill_referenced_vars
 from amaya.preprocessing.eval import VarInfo
-from amaya.preprocessing.unit_coefficient_fourier_motzkin import eliminate_unit_coefficient_vars_by_fourier_motzkin
+from amaya.preprocessing.unit_coefficient_fourier_motzkin import (
+    _hoist_nested_existentials,
+    eliminate_unit_coefficient_vars_by_fourier_motzkin,
+)
 from amaya.relations_structures import (
     AST_Negation,
     BoolLiteral,
@@ -201,3 +204,46 @@ def test_bool_variable_is_not_eliminated():
     result = eliminate_unit_coefficient_vars_by_fourier_motzkin(formula, var_table)
 
     assert result == formula
+
+
+def test_nested_existential_is_hoisted_when_it_enables_elimination():
+    # Shape of the existential blocks of Problem10_label59_true-unreach-call.c_74.smt2 with small constants:
+    # exists y. (0 <= y  and  y <= 9  and  exists p. (p <= -3  and  p - x <= -4  and  -5p + y <= 20))
+    # y is blocked by the nested quantifier, p by its coefficient -5. Over the hoisted form y is eliminable:
+    # exists p. (p <= -3  and  p - x <= -4  and  -5p <= 20)
+    nested_quantifier = dsl._exists((W,), dsl._and(
+        _le([(1, W)], -3),
+        _le([(-1, X), (1, W)], -4),
+        _le([(1, Y), (-5, W)], 20),
+    ))
+    formula = dsl._exists((Y,), dsl._and(
+        _le([(-1, Y)], 0),
+        _le([(1, Y)], 9),
+        nested_quantifier,
+    ))
+
+    result = _eliminate(formula, X, Y, W)
+
+    assert Y not in result.referenced_vars
+    assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[X])
+
+
+def test_nested_existential_is_not_hoisted_without_elimination_gain():
+    # exists v. (-2v <= 0  and  exists w. (-2w <= 0  and  w - v <= 0)): no variable is eliminable either way.
+    nested_quantifier = dsl._exists((W,), dsl._and(_le([(-2, W)], 0), _le([(-1, V), (1, W)], 0)))
+    formula = dsl._exists((V,), dsl._and(_le([(-2, V)], 0), _le([(2, V), (-1, X)], 0), nested_quantifier))
+
+    result = _eliminate(formula, X, V, W)
+
+    assert result == formula
+
+
+def test_nested_existential_binding_an_outer_bound_var_is_not_hoisted():
+    # The nested quantifier rebinds v; hoisting would capture the outer v.
+    nested_quantifier = dsl._exists((V,), dsl._and(_le([(-2, V)], 0), _le([(1, V), (-1, X)], 0)))
+    formula = dsl._exists((V,), dsl._and(_le([(-2, V)], 0), _le([(2, V), (-1, X)], 0), nested_quantifier))
+    fill_referenced_vars(formula)
+
+    hoisting_result = _hoist_nested_existentials(formula.bound_vars, formula.child)
+
+    assert hoisting_result is None
