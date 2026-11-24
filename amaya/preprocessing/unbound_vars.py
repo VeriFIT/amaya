@@ -1641,6 +1641,9 @@ class Var_Monotonicity:
     decreasing: bool = False
     congruences: List[Tuple[int, Congruence]] = field(default_factory=list)
     limits: Value_Interval = field(default_factory=Value_Interval)
+    # True if the variable occurs as a Boolean leaf (`Var` node). The bounds and monotonicity above
+    # describe integer atoms only; they say nothing about the truth value of a Boolean variable.
+    occurs_as_boolean_leaf: bool = False
 
 
 def _set_limit_on_interestring_var_if_bound(relation: Relation, var_info: Dict[Var, Var_Monotonicity], is_positive: bool) -> bool:
@@ -1729,7 +1732,12 @@ def _determine_monotonicity_of_variables(tree: ASTp_Node, monotonicity_info: Mon
                     congruence_idx = monotonicity_info.get_next_congruence_id()
                     monotonicity_info.seen_vars[var].congruences.append((congruence_idx, tree))
 
-        case BoolLiteral() | Var():
+        case Var():
+            if tree in monotonicity_info.seen_vars:
+                monotonicity_info.seen_vars[tree].occurs_as_boolean_leaf = True
+            return
+
+        case BoolLiteral():
             return
 
         case AST_Connective():
@@ -2153,6 +2161,12 @@ def _optimize_exists_tree(exists_node: AST_Quantifier) -> Exists_Optimization_Re
     contains_optimizable_congruences: bool = False
     vars_to_optimize_congruences_with: List[Var] = []
     for var, var_monotonicity in monotonicity_info.seen_vars.items():
+        if var_monotonicity.occurs_as_boolean_leaf:
+            # `_substitute_var_with_value` substitutes into Relation and Congruence atoms only. Instantiating a
+            # Boolean variable would remove it from the bound variables while its `Var` leaves remain,
+            # making it a free variable (`exists b. not b` became `not b`).
+            continue
+
         if _do_bounds_imply_conflict(var_monotonicity):
             return Exists_Optimization_Result(node=BoolLiteral(False), contains_quantifier=False)
 
