@@ -817,6 +817,122 @@ def test_hard_bound_in_one_disjunct_does_not_affect_sibling_disjunct():
     assert pprint_formula(simplified_formula) == pprint_formula(formula)
 
 
+def _make_floor_division_definition(dividend: Var, quotient: Var, divisor: int) -> tuple[Relation, Relation]:
+    """ `0 <= dividend - divisor*quotient <= divisor - 1`, i.e., quotient = floor(dividend / divisor). """
+    return (
+        Relation(vars=[dividend, quotient], coefs=[-1, divisor], rhs=0, predicate_symbol='<='),
+        Relation(vars=[dividend, quotient], coefs=[1, -divisor], rhs=divisor - 1, predicate_symbol='<='),
+    )
+
+
+def test_bound_derived_through_division_definition_decides_nested_bound():
+    # x >= 135 AND q = floor(x/5) implies q >= 27, so (or (q <= -1) (= y 1)) becomes (= y 1).
+    x, q, y = Var(1), Var(2), Var(3)
+    lower_bound_on_x = Relation(vars=[x], coefs=[-1], rhs=-135, predicate_symbol='<=')
+    division_lower, division_upper = _make_floor_division_definition(x, q, 5)
+    y_equals_one = Relation(vars=[y], coefs=[1], rhs=1, predicate_symbol='=')
+    formula = AST_Connective(
+        referenced_vars=(x, q, y),
+        type=Connective_Type.AND,
+        children=(
+            lower_bound_on_x,
+            division_lower,
+            division_upper,
+            AST_Connective(
+                referenced_vars=(q, y),
+                type=Connective_Type.OR,
+                children=(Relation(vars=[q], coefs=[1], rhs=-1, predicate_symbol='<='), y_equals_one),
+            ),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    expected_formula = AST_Connective(
+        referenced_vars=(x, q, y),
+        type=Connective_Type.AND,
+        children=(lower_bound_on_x, division_lower, division_upper, y_equals_one),
+    )
+    assert pprint_formula(simplified_formula) == pprint_formula(expected_formula)
+
+
+def test_derived_bound_does_not_remove_its_own_premise():
+    # x >= 135 AND q = floor(x/5) gives q >= 27, which gives back x >= 135. The atom x >= 135 is the
+    # premise of that derivation and must be kept.
+    x, q = Var(1), Var(2)
+    lower_bound_on_x = Relation(vars=[x], coefs=[-1], rhs=-135, predicate_symbol='<=')
+    division_lower, division_upper = _make_floor_division_definition(x, q, 5)
+    formula = AST_Connective(
+        referenced_vars=(x, q),
+        type=Connective_Type.AND,
+        children=(lower_bound_on_x, division_lower, division_upper),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_bound_derivation_terminates_on_system_without_fixpoint():
+    # x <= y - 1 AND y <= x AND x >= 0 raises the lower bounds of x and y in every round. It is unsatisfiable;
+    # the derivation must stop and must not produce a wrong verdict.
+    x, y = Var(1), Var(2)
+    formula = AST_Connective(
+        referenced_vars=(x, y),
+        type=Connective_Type.AND,
+        children=(
+            Relation(vars=[x, y], coefs=[1, -1], rhs=-1, predicate_symbol='<='),
+            Relation(vars=[x, y], coefs=[-1, 1], rhs=0, predicate_symbol='<='),
+            Relation(vars=[x], coefs=[-1], rhs=0, predicate_symbol='<='),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert simplified_formula == BoolLiteral(False) or pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_bound_derived_in_one_disjunct_does_not_affect_sibling_disjunct():
+    # (or (and (x >= 135) q = floor(x/5)) (q <= -1)): q >= 27 holds only in the first disjunct.
+    x, q = Var(1), Var(2)
+    division_lower, division_upper = _make_floor_division_definition(x, q, 5)
+    formula = AST_Connective(
+        referenced_vars=(x, q),
+        type=Connective_Type.OR,
+        children=(
+            AST_Connective(
+                referenced_vars=(x, q),
+                type=Connective_Type.AND,
+                children=(Relation(vars=[x], coefs=[-1], rhs=-135, predicate_symbol='<='), division_lower, division_upper),
+            ),
+            Relation(vars=[q], coefs=[1], rhs=-1, predicate_symbol='<='),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_conjunction_with_empty_derived_interval_is_false():
+    # x >= 10 AND x <= 20 AND x + y <= 5 AND y >= 0: x + y >= 10 > 5.
+    x, y = Var(1), Var(2)
+    formula = AST_Connective(
+        referenced_vars=(x, y),
+        type=Connective_Type.AND,
+        children=(
+            Relation(vars=[x], coefs=[-1], rhs=-10, predicate_symbol='<='),
+            Relation(vars=[x], coefs=[1], rhs=20, predicate_symbol='<='),
+            Relation(vars=[x, y], coefs=[1, 1], rhs=5, predicate_symbol='<='),
+            Relation(vars=[y], coefs=[-1], rhs=0, predicate_symbol='<='),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert simplified_formula == BoolLiteral(False)
+
+
 def test_implied_bound_that_is_direct_conjunct_is_kept():
     # (and (-x <= -5) (or (and (-x <= -3) (= y 1)) (= y 2))): the nested bound -x <= -3 is implied by the
     # enclosing AND, but it is a direct conjunct of the inner AND. `interval-analysis` inserts such conjuncts;
