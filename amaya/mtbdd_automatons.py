@@ -374,6 +374,9 @@ class MTBDD_NFA(NFA):
         logger.debug(f'Removed {len(states_removed)} out of {len(self.states)}.')
         self.transition_fn.remove_states(states_removed)
         self.states = states_reaching_accepting_state
+        # Initial states from which no final state is reachable are removed from `self.states`; keep the set of
+        # initial states a subset of `self.states`.
+        self.initial_states = self.initial_states.intersection(states_reaching_accepting_state)
 
         if not states_reaching_accepting_state:
             # In case the language of the automaton is empty keep at least 1 nonaccepting state so that functions

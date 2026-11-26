@@ -455,6 +455,9 @@ class NFA:
         """BFS on rotated transitions"""
         reachable_states = self.transition_fn.remove_nonfinishing_states(self.states, self.final_states)
         self.states = reachable_states
+        # Initial states from which no final state is reachable are removed from `self.states`; keep the set of
+        # initial states a subset of `self.states`.
+        self.initial_states = self.initial_states.intersection(reachable_states)
 
     def get_state_post(self, state: int) -> List[int]:
         assert state in self.states, f'Cannot retrieve post of non automaton state: {state}'
