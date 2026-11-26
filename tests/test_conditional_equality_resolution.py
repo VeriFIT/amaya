@@ -546,3 +546,109 @@ def test_inequality_resolution_negates_an_escape_containing_a_quantifier():
     original = dsl._exists((X,), dsl._and(*clauses, *inequalities))
     fill_referenced_vars(original)
     assert_semantically_equivalent(original, result, bool_vars=[C], int_vars=[B])
+
+
+def _binder_counts(node: ASTp_Node, counts: dict) -> dict:
+    if isinstance(node, AST_Quantifier):
+        for var in node.bound_vars:
+            counts[var] = counts.get(var, 0) + 1
+        _binder_counts(node.child, counts)
+    elif isinstance(node, AST_Negation):
+        _binder_counts(node.child, counts)
+    elif isinstance(node, AST_Connective):
+        for child in node.children:
+            _binder_counts(child, counts)
+    return counts
+
+
+def _int_var_table(*int_vars: Var) -> dict:
+    from amaya.preprocessing.eval import VarInfo
+    from amaya.relations_structures import VariableType
+    return {var: VarInfo(name=f'v{var.id}', type=VariableType.INT) for var in int_vars}
+
+
+def _three_clauses_with_quantified_escape():
+    # exists x. (or (exists w. w <= b) (x = 1))  and  (or c (x = 2))  and  (or d (x = 3))
+    W = Var(id=11)
+    quantified_escape = dsl._exists((W,), Relation(vars=[W, B], coefs=[1, -1], rhs=0, predicate_symbol='<='))
+    return W, [dsl._or(quantified_escape, _eq_x_to(None, rhs=1)),
+               dsl._or(C, _eq_x_to(None, rhs=2)),
+               dsl._or(D, _eq_x_to(None, rhs=3))]
+
+
+@pytest.mark.parametrize('with_inequality', [False, True])
+def test_copied_escape_quantifiers_are_rebound_to_fresh_vars(with_inequality):
+    # The escape `exists w. w <= b` is copied into several branches of the result; with the variable table
+    # given, every copy but the first binds a fresh variable, so no variable is bound twice.
+    W, clauses = _three_clauses_with_quantified_escape()
+    inequalities = [Relation(vars=[X], coefs=[1], rhs=5, predicate_symbol='<=')] if with_inequality else []
+    formula = dsl._exists((X,), dsl._and(*clauses, *inequalities))
+    fill_referenced_vars(formula)
+    var_table = _int_var_table(X, B, W)
+
+    result = resolve_conditional_equalities(formula, var_table)
+
+    binder_counts = _binder_counts(result, {})
+    assert X not in binder_counts
+    assert len(binder_counts) > 1, 'the escape was expected to be copied'
+    assert all(count == 1 for count in binder_counts.values()), binder_counts
+    assert all(var in var_table for var in binder_counts)
+    assert all(var_table[var].name.startswith('v11#') for var in binder_counts if var != W)
+    original = dsl._exists((X,), dsl._and(*clauses, *inequalities))
+    fill_referenced_vars(original)
+    assert_semantically_equivalent(original, result, bool_vars=[C, D], int_vars=[B], int_range=range(-2, 3))
+
+
+def test_copied_escape_quantifiers_share_a_var_without_var_table():
+    # Without the variable table no fresh variables can be allocated; the copies keep binding `w`.
+    W, clauses = _three_clauses_with_quantified_escape()
+    formula = dsl._exists((X,), dsl._and(*clauses))
+    fill_referenced_vars(formula)
+
+    result = resolve_conditional_equalities(formula)
+
+    assert _binder_counts(result, {})[W] > 1
+
+
+def test_make_bound_variables_unique_keeps_the_first_binder():
+    from amaya.preprocessing.variable_renaming import make_bound_variables_unique
+    W = Var(id=11)
+    def copy_of_quantifier():
+        return dsl._exists((W,), Relation(vars=[W, B], coefs=[1, -1], rhs=0, predicate_symbol='<='))
+    formula = dsl._or(copy_of_quantifier(), dsl._and(C, copy_of_quantifier()), dsl._neg(copy_of_quantifier()))
+    fill_referenced_vars(formula)
+    var_table = _int_var_table(B, W)
+
+    result = make_bound_variables_unique(formula, var_table)
+
+    assert result.children[0].bound_vars == (W,)
+    renamed_vars = [result.children[1].children[1].bound_vars[0], result.children[2].child.bound_vars[0]]
+    assert W not in renamed_vars and len(set(renamed_vars)) == 2
+    assert_semantically_equivalent(formula, result, bool_vars=[C], int_vars=[B])
+
+
+def test_make_bound_variables_unique_renames_nested_shadowing_binders():
+    # exists w. (w <= b  and  exists w. (b <= w  and  not exists w. w = b + 1))
+    from amaya.preprocessing.variable_renaming import make_bound_variables_unique
+    W = Var(id=11)
+    innermost = dsl._exists((W,), Relation(vars=[W, B], coefs=[1, -1], rhs=1, predicate_symbol='='))
+    middle = dsl._exists((W,), dsl._and(Relation(vars=[W, B], coefs=[-1, 1], rhs=0, predicate_symbol='<='),
+                                        dsl._neg(innermost)))
+    formula = dsl._exists((W,), dsl._and(Relation(vars=[W, B], coefs=[1, -1], rhs=0, predicate_symbol='<='),
+                                         middle))
+    fill_referenced_vars(formula)
+    var_table = _int_var_table(B, W)
+
+    result = make_bound_variables_unique(formula, var_table)
+
+    binder_counts = _binder_counts(result, {})
+    assert len(binder_counts) == 3 and all(count == 1 for count in binder_counts.values())
+    assert result.bound_vars == (W,)
+    middle_var = result.child.children[1].bound_vars[0]
+    innermost_quantifier = result.child.children[1].child.children[1].child
+    innermost_var = innermost_quantifier.bound_vars[0]
+    assert all(var in var_table for var in (middle_var, innermost_var))
+    assert W in result.child.children[0].vars
+    assert middle_var in result.child.children[1].child.children[0].vars
+    assert innermost_var in innermost_quantifier.child.vars
+    assert_semantically_equivalent(formula, result, bool_vars=[], int_vars=[B])

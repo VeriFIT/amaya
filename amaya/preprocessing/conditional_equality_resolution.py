@@ -61,12 +61,18 @@ Rather than risk an unsound shortcut there, `D_ok` is instead left as a genuine 
 and now scoped to `D` alone rather than the whole original quantifier body) residual
 `exists x. D` in that case - still sound, just not as fully flattened as the hard-bounds-only
 case.
+
+Both rewrites copy every escape `alpha_i` into several branches of their result. An escape can contain a
+quantifier, so the result can contain several `AST_Quantifier` nodes binding the same `Var`. Later passes
+assume that every variable is bound by at most one quantifier (e.g. `unbound_vars.py:_determine_monotonicity_of_variables`
+asserts it), so when `resolve_conditional_equalities` is given the variable table, it applies
+`amaya/preprocessing/variable_renaming.py:make_bound_variables_unique` to the result of every elimination.
 """
 
 from __future__ import annotations
 
 import itertools
-from typing import List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
 
 from amaya.relations_structures import (
     ASTp_Node,
@@ -80,6 +86,9 @@ from amaya.relations_structures import (
     Value_Interval,
     Var,
 )
+
+if TYPE_CHECKING:
+    from amaya.preprocessing.eval import VarInfo
 
 
 def _extract_referenced_vars(node: ASTp_Node) -> Tuple[Var, ...]:
@@ -484,23 +493,32 @@ def _resolve_conditional_equalities_for_quantifier(bound_vars: Tuple[Var, ...], 
     return current_body, tuple(remaining_vars)
 
 
-def resolve_conditional_equalities(root: ASTp_Node) -> ASTp_Node:
+def _rename_repeated_binders_apart(node: ASTp_Node, var_table: Dict[Var, VarInfo]) -> ASTp_Node:
+    # Imported here: `variable_renaming` imports `fill_referenced_vars` from this module.
+    from amaya.preprocessing.variable_renaming import make_bound_variables_unique
+    return make_bound_variables_unique(node, var_table)
+
+
+def resolve_conditional_equalities(root: ASTp_Node, var_table: Optional[Dict[Var, VarInfo]] = None) -> ASTp_Node:
     """
     Bottom-up pass eliminating existentially quantified variables that appear only in
     conditional equalities (equalities hidden inside disjunctions). See module docstring.
+
+    If `var_table` is given, quantifiers copied by an elimination are rebound to fresh variables recorded
+    in it (see `variable_renaming.make_bound_variables_unique`). Without it, the result can bind a variable more than once.
     """
     match root:
         case Relation() | Congruence() | BoolLiteral() | Var():
             return root
 
         case AST_Negation():
-            new_child = resolve_conditional_equalities(root.child)
+            new_child = resolve_conditional_equalities(root.child, var_table)
             if isinstance(new_child, BoolLiteral):
                 return BoolLiteral(not new_child.value)
             return AST_Negation(referenced_vars=_extract_referenced_vars(new_child), child=new_child)
 
         case AST_Connective():
-            new_children = tuple(resolve_conditional_equalities(child) for child in root.children)
+            new_children = tuple(resolve_conditional_equalities(child, var_table) for child in root.children)
             new_node = root.replace_children(new_children)
 
             new_node = new_node.simplify_on_anihilators()
@@ -511,8 +529,11 @@ def resolve_conditional_equalities(root: ASTp_Node) -> ASTp_Node:
             return new_node
 
         case AST_Quantifier():
-            new_child = resolve_conditional_equalities(root.child)
+            new_child = resolve_conditional_equalities(root.child, var_table)
             new_child, remaining_bound_vars = _resolve_conditional_equalities_for_quantifier(root.bound_vars, new_child)
+
+            if var_table is not None and len(remaining_bound_vars) < len(root.bound_vars):
+                new_child = _rename_repeated_binders_apart(new_child, var_table)
 
             if not remaining_bound_vars or isinstance(new_child, BoolLiteral):
                 return new_child
