@@ -1120,7 +1120,7 @@ def _try_rewrite_congruence_on_unbund_vars(exists_and_tree: AST_Quantifier, var_
     new_node = AST_Quantifier(referenced_vars=_referenced_vars_of(new_and_node), bound_vars=tuple(new_binding_list), child=new_and_node)
 
     for new_var in new_bound_vars:
-        var_table[new_var] = VarInfo(name='congruence replacement', type=VariableType.INT)
+        var_table[new_var] = VarInfo(name=f'congruence_replacement_{new_var.id}', type=VariableType.INT)
 
     return new_node
 

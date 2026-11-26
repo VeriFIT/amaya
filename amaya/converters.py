@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 import functools
 from typing import Callable, Dict, List, Tuple
+import re
 import sys
 
 from amaya.preprocessing.eval import VarInfo
@@ -16,6 +17,25 @@ from amaya.relations_structures import(
     Var,
     VariableType,
 )
+
+
+SMT2_SIMPLE_SYMBOL_PATTERN = re.compile(r'[A-Za-z~!@$%^&*_+=<>.?/\-][0-9A-Za-z~!@$%^&*_+=<>.?/\-]*')
+
+SMT2_RESERVED_WORDS = frozenset({
+    '!', '_', 'as', 'BINARY', 'DECIMAL', 'exists', 'HEXADECIMAL', 'forall', 'let', 'match', 'NUMERAL', 'par', 'STRING',
+})
+
+
+def format_smt2_symbol(name: str) -> str:
+    """
+    Returns `name` as an SMT-LIB 2.6 symbol: unchanged if it is a simple symbol that is not a reserved word,
+    otherwise enclosed in `|...|`. A quoted symbol cannot contain `|` or `\\`, so such a name raises ValueError.
+    """
+    if SMT2_SIMPLE_SYMBOL_PATTERN.fullmatch(name) and name not in SMT2_RESERVED_WORDS:
+        return name
+    if '|' in name or '\\' in name:
+        raise ValueError(f'The variable name {name!r} cannot be written as an SMT-LIB symbol.')
+    return f'|{name}|'
 
 
 def var_into_var_name(var: Var) -> str:
@@ -175,7 +195,7 @@ def write_ast_in_smt2(ast: ASTp_Node,
     preamble = '\n'.join(preamble_lines) + '\n'
 
     def var_formatter(var: Var, var_table: Dict[Var, VarInfo]):
-        return var_table[var].name
+        return format_smt2_symbol(var_table[var].name)
 
     formula_params = ''.join(f'(declare-fun {var_formatter(param, var_table)} () {param_info.type.into_smt2_sort()})\n' for param, param_info in global_variables)
 
@@ -209,6 +229,20 @@ def _rename_vars(root: ASTp_Node, substitution: Dict[Var, Var]) -> ASTp_Node:
             raise ValueError('Unhandled AST node while performing variable substitution.')
 
 
+def _make_unused_var_name(preferred_name: str, used_var_names: set[str]) -> str:
+    """
+    Returns `preferred_name` if no variable has it, otherwise `preferred_name` with the smallest suffix `_<n>`
+    (n >= 1) that no variable has. Bound primed variables must not reuse the name of another variable: a
+    binder named like a free variable occurring in its scope captures that variable.
+    """
+    if preferred_name not in used_var_names:
+        return preferred_name
+    suffix = 1
+    while f'{preferred_name}_{suffix}' in used_var_names:
+        suffix += 1
+    return f'{preferred_name}_{suffix}'
+
+
 def generate_optimization_problem(input_formula: ASTp_Node, var_table: Dict[Var, VarInfo], params: List[Var]) -> ASTp_Node:
     """
     Given a formula PHI(x, y, ...) return its optimization variant requiring the model values to be largest among models.
@@ -220,15 +254,18 @@ def generate_optimization_problem(input_formula: ASTp_Node, var_table: Dict[Var,
         # There is nothing to optimize if the formula has no free variables
         return input_formula
 
-    var_count = len(var_table)
     comment = f'Primed version of {0} to represent values of other models in optimization problem.'
     substitution: Dict[Var, Var] = {}
-    for param_idx, param in enumerate(params):
-        param_idx += 1  # Make sure that we are not overriding variables when param_idx=0
+    used_var_names = {var_info.name for var_info in var_table.values()}
+    next_free_var_id = max((var.id for var in var_table), default=0) + 1
+    for param in params:
         param_info = var_table[param]
         assert param_info.type == VariableType.INT, 'Conversion into an optimization problem supported only for formulae with purely integer parameters.'
-        primed_param = Var(id=var_count+param_idx)
-        var_table[primed_param] = VarInfo(name=f'{param_info.name}_primed', type=param_info.type, comment=comment.format(param_info.name))
+        primed_param = Var(id=next_free_var_id)
+        next_free_var_id += 1
+        primed_param_name = _make_unused_var_name(f'{param_info.name}_primed', used_var_names)
+        used_var_names.add(primed_param_name)
+        var_table[primed_param] = VarInfo(name=primed_param_name, type=param_info.type, comment=comment.format(param_info.name))
         substitution[param] = primed_param
 
     if isinstance(input_formula, (AST_Quantifier, AST_Connective, AST_Negation)):
