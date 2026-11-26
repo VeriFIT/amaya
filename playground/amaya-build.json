@@ -1,8 +1,8 @@
 {
-  "buildId": "6b717a000fb6",
-  "wheel": "amaya-0.0.0+wasm.a5311da780-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+  "buildId": "c3fa139b6eed",
+  "wheel": "amaya-0.0.0+wasm.b09d88eeb3-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
   "visualizationWheels": ["astutils-0.0.6-py3-none-any.whl", "dd-0.6.0-py3-none-any.whl", "graphviz-0.21-py3-none-any.whl", "ply-3.10-py2.py3-none-any.whl"],
   "pyodideVersion": "0.29.5",
   "sylvanVersion": "v1.5.0",
-  "amayaCommit": "bfc5166"
+  "amayaCommit": "4b1fc6b"
 }
