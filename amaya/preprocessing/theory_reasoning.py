@@ -18,6 +18,7 @@ from amaya.relations_structures import (
     Value_Interval,
     Var,
     ast_references_var,
+    compute_implied_bound,
     get_hard_bound_semantics,
     pprint_formula
 )
@@ -73,6 +74,13 @@ class Asserted_Model_Properties:
     `_substitute_known_aliases`. Bounds produced by alias substitution are not counted, because
     `_find_vars_covered_by_hard_bounds` compares the sum over all frames on the stack against
     `var_uses_total`, which counts atoms of the formula before substitution.
+    """
+
+    derived_var_bounds: list[dict[Var, Value_Interval]] = field(default_factory=lambda: [{}])
+    """
+    Variable bounds derived from direct children of a conjunction to be used deeper in the formula.
+    We cannot use it at the level of the conjunction (we must go deeper), as we could remove
+    some of the atoms used to obtain the derived bounds.
     """
 
     free_vars_may_be_constrained_outside_the_formula: bool = False
@@ -140,6 +148,7 @@ class Asserted_Model_Properties:
         self.bool_atom_values.append(dict())
         self.var_aliases.append(dict())
         self.var_bounds.append(dict())
+        self.derived_var_bounds.append(dict())
         self.hard_bound_count_per_var.append(dict())
         self.stack_entry_negation_depths.append(self.negation_depth)
         self.quantifier_binder_per_frame.append(None)
@@ -157,6 +166,7 @@ class Asserted_Model_Properties:
         self.equations.pop(-1)
         self.var_aliases.pop(-1)
         self.var_bounds.pop(-1)
+        self.derived_var_bounds.pop(-1)
         self.hard_bound_count_per_var.pop(-1)
         self.stack_entry_negation_depths.pop(-1)
         self.quantifier_binder_per_frame.pop(-1)
@@ -289,6 +299,124 @@ class Asserted_Model_Properties:
             if interval.upper_limit is not None:
                 combined.try_strengthen_upper(interval.upper_limit)
         return combined
+
+    def get_bounds_usable_below_current_frame(self, var: Var) -> Value_Interval:
+        """
+        Combine the stored bounds on `var` (`get_hard_bounds`) with the bounds derived in every open frame
+        except the topmost one. The topmost frame's derived bounds were computed from the Relations that
+        are visited in that frame, so they must not be used to rewrite those Relations.
+        """
+        combined = self.get_hard_bounds(var)
+        for level in self.derived_var_bounds[:-1]:
+            interval = level.get(var)
+            if interval is None:
+                continue
+            if interval.lower_limit is not None:
+                combined.try_strengthen_lower(interval.lower_limit)
+            if interval.upper_limit is not None:
+                combined.try_strengthen_upper(interval.upper_limit)
+        return combined
+
+
+MAX_BOUND_DERIVATION_ROUNDS = 8
+"""
+Upper limit on the rounds of `_derive_bounds_from_conjunct_relations`. A system such as
+`x <= y - 1 AND y <= x AND x >= 0` raises the lower bounds of `x` and `y` by one in every round without
+reaching a fixpoint, so the derivation stops after this many rounds. For this particular example,
+we could detect that we are cycling and conclude UNSAT. However, this is because the example
+falls into difference logic. If there would be larger coefficients involved, we still might
+not terminate.
+"""
+
+
+def _derive_bounds_from_conjunct_relations(conjuncts: Iterable[ASTp_Node],
+                                           assertions: Asserted_Model_Properties) -> dict[Var, Value_Interval] | None:
+    """
+    Derive bounds on variables from the linear Relations among `conjuncts` (the direct children of an AND).
+
+    For an inequality `sum_i a_i*x_i <= c` and a variable `x_j` in it, `a_j*x_j <= c - sum_{i != j} min(a_i*x_i)`,
+    where `min(a_i*x_i)` is `a_i*lower(x_i)` for `a_i > 0` and `a_i*upper(x_i)` for `a_i < 0`. Dividing by
+    `a_j` gives an upper bound on `x_j` (rounded down) for `a_j > 0` and a lower bound (rounded up) for `a_j < 0`.
+    An equation contributes the inequalities of both directions. The rounds repeat until no bound changes,
+    at most `MAX_BOUND_DERIVATION_ROUNDS` times. The initial bounds are those usable in the frame of the AND
+    (stored bounds and the bounds derived by enclosing ANDs).
+
+    Returns:
+        The bounds that are tighter than the initial ones, or None if some variable has an empty interval
+        (the conjunction is unsatisfiable).
+    """
+    inequalities: list[tuple[list[int], list[Var], int]] = []
+    for conjunct in conjuncts:
+        if not isinstance(conjunct, Relation) or not conjunct.vars:
+            continue
+        if conjunct.predicate_symbol == '<=':
+            inequalities.append((list(conjunct.coefs), list(conjunct.vars), conjunct.rhs))
+        elif conjunct.predicate_symbol == '=':
+            inequalities.append((list(conjunct.coefs), list(conjunct.vars), conjunct.rhs))
+            inequalities.append(([-coef for coef in conjunct.coefs], list(conjunct.vars), -conjunct.rhs))
+
+    if not any(len(inequality_vars) > 1 for _, inequality_vars, _ in inequalities):
+        return {}  # Single-variable bounds are handled when the atoms themselves are visited
+
+    lower_bounds: dict[Var, int | None] = {}
+    upper_bounds: dict[Var, int | None] = {}
+    for _, inequality_vars, _ in inequalities:
+        for var in inequality_vars:
+            if var not in lower_bounds:
+                initial_bounds = assertions.get_bounds_usable_below_current_frame(var)
+                lower_bounds[var] = initial_bounds.lower_limit
+                upper_bounds[var] = initial_bounds.upper_limit
+    initial_lower_bounds = dict(lower_bounds)
+    initial_upper_bounds = dict(upper_bounds)
+
+    for _ in range(MAX_BOUND_DERIVATION_ROUNDS):
+        some_bound_changed = False
+        for coefs, inequality_vars, rhs in inequalities:
+            for target_index, target_var in enumerate(inequality_vars):
+                target_coef = coefs[target_index]
+                if target_coef == 0:
+                    continue
+                residual_rhs: int | None = rhs
+                for other_index, other_var in enumerate(inequality_vars):
+                    if other_index == target_index:
+                        continue
+                    other_coef = coefs[other_index]
+                    if other_coef == 0:
+                        continue
+                    minimizing_value = lower_bounds[other_var] if other_coef > 0 else upper_bounds[other_var]
+                    if minimizing_value is None:
+                        residual_rhs = None
+                        break
+                    residual_rhs -= other_coef * minimizing_value
+                if residual_rhs is None:
+                    continue
+
+                implied_value = compute_implied_bound(target_var, target_coef, residual_rhs)
+                if target_coef > 0:
+                    current_upper = upper_bounds[target_var]
+                    if current_upper is None or implied_value < current_upper:
+                        upper_bounds[target_var] = implied_value
+                        some_bound_changed = True
+                else:
+                    current_lower = lower_bounds[target_var]
+                    if current_lower is None or implied_value > current_lower:
+                        lower_bounds[target_var] = implied_value
+                        some_bound_changed = True
+
+                lower, upper = lower_bounds[target_var], upper_bounds[target_var]
+                if lower is not None and upper is not None and lower > upper:
+                    return None
+        if not some_bound_changed:
+            break
+
+    derived_bounds: dict[Var, Value_Interval] = {}
+    for var in lower_bounds:
+        lower_changed = lower_bounds[var] != initial_lower_bounds[var]
+        upper_changed = upper_bounds[var] != initial_upper_bounds[var]
+        if lower_changed or upper_changed:
+            derived_bounds[var] = Value_Interval(lower_limit=lower_bounds[var] if lower_changed else None,
+                                                 upper_limit=upper_bounds[var] if upper_changed else None)
+    return derived_bounds
 
 
 def _eliminate_known_info_from_eq(eq1: Relation, eq2: Relation) -> Relation:
@@ -718,7 +846,9 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node,
                     # Every stored bound holds wherever the current node is evaluated (bounds are stored
                     # only when unconditionally true for their frame, and only frames that are still open
                     # are consulted), so a bound they imply is True here and a bound they contradict is False.
-                    known_bounds = assertions.get_hard_bounds(bound_var)
+                    # The same holds for bounds derived by enclosing ANDs, excluding the innermost frame
+                    # whose derived bounds may have been derived from this atom.
+                    known_bounds = assertions.get_bounds_usable_below_current_frame(bound_var)
                     bound_type, _, bound_value = get_hard_bound_semantics(substituted)
                     # An implied bound that is a direct conjunct of an AND is kept: `interval-analysis`
                     # (`unbound_vars.py:prune_conjunctions_false_due_to_parent_context`) inserts bounds
@@ -787,6 +917,13 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node,
                     )
                     new_children_by_index: dict[int, ASTp_Node] = {}
                     assertions.insert_stack()
+
+                    derived_bounds = _derive_bounds_from_conjunct_relations(root_node.children, assertions)
+                    if derived_bounds is None:
+                        assertions.pop_stack()
+                        return BoolLiteral(False)
+                    assertions.derived_var_bounds[-1] = derived_bounds
+
                     for child_index in child_indices_in_visit_order:
                         new_children_by_index[child_index] = _simplify_formula_using_model_properties(
                             root_node.children[child_index], assertions, parent_node_type=root_node.type)
