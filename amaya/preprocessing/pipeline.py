@@ -247,7 +247,7 @@ def _registry_definition() -> List[Pass_Descriptor]:
         ),
         Pass_Descriptor(
             name='rce', config_flag='resolve_conditional_equalities',
-            run=lambda ast, ctx: resolve_conditional_equalities(ast),
+            run=lambda ast, ctx: resolve_conditional_equalities(ast, ctx.var_table),
             tier=Pass_Tier.CORE,
             consumes=frozenset({NARY_SHAPE, EQUALITY_EXPOSED, QUANTIFIER_SHAPE, VAR_ELIMINATED}),
             produces=frozenset({EQUALITY_EXPOSED, VAR_ELIMINATED, QUANTIFIER_SHAPE, NARY_SHAPE}),

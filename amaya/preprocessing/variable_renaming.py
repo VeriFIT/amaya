@@ -8,7 +8,7 @@ them without importing the DPLL(T) module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from amaya.preprocessing.conditional_equality_resolution import fill_referenced_vars
 from amaya.preprocessing.eval import VarInfo
@@ -136,3 +136,109 @@ def freshen_bound_variables_in_subformula(node: ASTp_Node, var_table: Dict[Var, 
     freshened_node = _freshen_bound_variables(node, {}, allocator)
     fill_referenced_vars(freshened_node)
     return freshened_node
+
+
+@dataclass
+class _Crossed_Binder_Stack:
+    """
+    Substitutions introduced by the quantifiers crossed on the path from the root to the current position
+    of a depth-first traversal, outermost first.
+
+    Each crossed quantifier pushes one substitution mapping the variables it binds to their replacements
+    and pops it when the traversal leaves the quantifier. A variable is renamed by the substitution of the
+    innermost crossed quantifier that binds it (`find_replacement` searches the stack from the top).
+    """
+
+    substitutions: List[Dict[Var, Var]]
+
+    def push_binder(self, bound_var_replacements: Dict[Var, Var]) -> None:
+        self.substitutions.append(bound_var_replacements)
+
+    def pop_binder(self) -> None:
+        self.substitutions.pop()
+
+    def find_replacement(self, var: Var) -> Var:
+        """ Returns `var` itself when no crossed quantifier binds it (`var` is free at the current position). """
+        for substitution in reversed(self.substitutions):
+            replacement_var = substitution.get(var)
+            if replacement_var is not None:
+                return replacement_var
+        return var
+
+
+def _make_bound_variables_unique(node: ASTp_Node,
+                                 crossed_binders: _Crossed_Binder_Stack,
+                                 already_bound_vars: Set[Var],
+                                 allocator: Fresh_Variable_Allocator) -> ASTp_Node:
+    """ `make_bound_variables_unique`'s recursion; returns `node` itself when nothing changes. """
+    match node:
+        case Var():
+            return crossed_binders.find_replacement(node)
+
+        case BoolLiteral():
+            return node
+
+        case Relation() | Congruence():
+            substitution_for_atom: Dict[Var, Var] = {}
+            for var in node.vars:
+                replacement_var = crossed_binders.find_replacement(var)
+                if replacement_var != var:
+                    substitution_for_atom[var] = replacement_var
+            if not substitution_for_atom:
+                return node
+            return _substitute_vars_in_atom_terms(node, substitution_for_atom)
+
+        case AST_Negation():
+            renamed_child = _make_bound_variables_unique(node.child, crossed_binders, already_bound_vars, allocator)
+            if renamed_child is node.child:
+                return node
+            return AST_Negation(referenced_vars=node.referenced_vars, child=renamed_child)
+
+        case AST_Connective():
+            renamed_children = tuple(
+                _make_bound_variables_unique(child, crossed_binders, already_bound_vars, allocator)
+                for child in node.children
+            )
+            if all(renamed is original for renamed, original in zip(renamed_children, node.children)):
+                return node
+            return AST_Connective(referenced_vars=node.referenced_vars, type=node.type, children=renamed_children)
+
+        case AST_Quantifier():
+            bound_var_replacements: Dict[Var, Var] = {}
+            for bound_var in node.bound_vars:
+                if bound_var in already_bound_vars:
+                    replacement_var = allocator.allocate_copy_of_variable(bound_var)
+                else:
+                    replacement_var = bound_var
+                already_bound_vars.add(replacement_var)
+                # Also recorded when the variable is kept: it shadows a renaming of the same variable made
+                # by an enclosing quantifier.
+                bound_var_replacements[bound_var] = replacement_var
+
+            crossed_binders.push_binder(bound_var_replacements)
+            renamed_child = _make_bound_variables_unique(node.child, crossed_binders, already_bound_vars, allocator)
+            crossed_binders.pop_binder()
+
+            new_bound_vars = tuple(bound_var_replacements[bound_var] for bound_var in node.bound_vars)
+            if renamed_child is node.child and new_bound_vars == tuple(node.bound_vars):
+                return node
+            return AST_Quantifier(referenced_vars=node.referenced_vars, bound_vars=new_bound_vars, child=renamed_child)
+
+    raise ValueError(f'Unhandled formula node while making bound variables unique: {type(node)}')
+
+
+def make_bound_variables_unique(node: ASTp_Node, var_table: Dict[Var, VarInfo]) -> ASTp_Node:
+    """
+    Return `node` in which no two `AST_Quantifier` nodes bind the same variable.
+
+    The traversal is depth-first, left to right. The first quantifier binding a variable keeps it; every
+    later one, nested or not, binds a fresh variable recorded in `var_table`. Occurrences are renamed
+    according to the innermost crossed binder (`_Crossed_Binder_Stack`), so scoping is preserved and the
+    result is equivalent to `node`. Returns `node` itself when no binder is renamed.
+    """
+    allocator = Fresh_Variable_Allocator.for_var_table(var_table)
+    crossed_binders = _Crossed_Binder_Stack(substitutions=[])
+    renamed_node = _make_bound_variables_unique(node, crossed_binders, set(), allocator)
+    if renamed_node is not node:
+        fill_referenced_vars(renamed_node)
+    return renamed_node
