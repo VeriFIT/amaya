@@ -933,6 +933,115 @@ def test_conjunction_with_empty_derived_interval_is_false():
     assert simplified_formula == BoolLiteral(False)
 
 
+def _run_unconstrained_vars_pass(formula):
+    var_uses = Variable_Use_Info()
+    scan_variable_use(formula, var_uses)
+    return remove_atoms_satisfied_by_unconstrained_vars(formula, var_uses, desired_polarity=True)
+
+
+def _make_lower_and_upper_bound(var: Var, lower: int, upper: int) -> tuple[Relation, Relation]:
+    return (Relation(vars=[var], coefs=[-1], rhs=-lower, predicate_symbol='<='),
+            Relation(vars=[var], coefs=[1], rhs=upper, predicate_symbol='<='))
+
+
+def test_quantified_var_used_only_in_satisfiable_bounds_is_dropped():
+    # exists v. (and (0 <= v) (v <= 4) (x + y <= 3))  ---->  x + y <= 3
+    from amaya.relations_structures import AST_Quantifier
+    v, x, y = Var(1), Var(2), Var(3)
+    remaining_atom = Relation(vars=[x, y], coefs=[1, 1], rhs=3, predicate_symbol='<=')
+    formula = AST_Quantifier(
+        referenced_vars=(x, y), bound_vars=(v,),
+        child=AST_Connective(referenced_vars=(v, x, y), type=Connective_Type.AND,
+                             children=(*_make_lower_and_upper_bound(v, 0, 4), remaining_atom)),
+    )
+
+    simplified_formula = _run_unconstrained_vars_pass(formula)
+
+    assert pprint_formula(simplified_formula) == pprint_formula(remaining_atom)
+
+
+def test_quantified_var_with_unsatisfiable_bounds_is_kept():
+    from amaya.relations_structures import AST_Quantifier
+    v, x, y = Var(1), Var(2), Var(3)
+    formula = AST_Quantifier(
+        referenced_vars=(x, y), bound_vars=(v,),
+        child=AST_Connective(referenced_vars=(v, x, y), type=Connective_Type.AND,
+                             children=(*_make_lower_and_upper_bound(v, 5, 4),
+                                       Relation(vars=[x, y], coefs=[1, 1], rhs=3, predicate_symbol='<='))),
+    )
+
+    simplified_formula = _run_unconstrained_vars_pass(formula)
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_free_var_used_only_in_bounds_is_kept():
+    x, y = Var(1), Var(2)
+    formula = AST_Connective(referenced_vars=(x, y), type=Connective_Type.AND,
+                             children=(*_make_lower_and_upper_bound(x, 0, 4),
+                                       Relation(vars=[x, y], coefs=[1, 1], rhs=3, predicate_symbol='<='),
+                                       Relation(vars=[y], coefs=[-1], rhs=0, predicate_symbol='<=')))
+    # x is free, and it also occurs in a two-variable relation.
+    simplified_formula = _run_unconstrained_vars_pass(formula)
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_quantified_var_used_only_in_bounds_under_negated_quantifier_is_dropped():
+    # not (exists v. (and (0 <= v) (v <= 4) (x <= 3)))  ---->  not (x <= 3)
+    # The AND occurs positively in the body of v's quantifier, so the witness for v makes the bounds True.
+    from amaya.relations_structures import AST_Quantifier
+    v, x = Var(1), Var(2)
+    x_upper_bound = Relation(vars=[x], coefs=[1], rhs=3, predicate_symbol='<=')
+    formula = AST_Negation(referenced_vars=(x,), child=AST_Quantifier(
+        referenced_vars=(x,), bound_vars=(v,),
+        child=AST_Connective(referenced_vars=(v, x), type=Connective_Type.AND,
+                             children=(*_make_lower_and_upper_bound(v, 0, 4), x_upper_bound)),
+    ))
+
+    simplified_formula = _run_unconstrained_vars_pass(formula)
+
+    assert pprint_formula(simplified_formula) == pprint_formula(AST_Negation(referenced_vars=(x,), child=x_upper_bound))
+
+
+def test_quantified_var_used_only_in_bounds_of_negated_conjunction_is_kept():
+    # exists v. not (and (0 <= v) (v <= 4) (x <= 3)) is True (pick v = 5); the AND occurs negatively in the
+    # body of v's quantifier, so the bounds must not be replaced by True (that would give not (x <= 3)).
+    from amaya.relations_structures import AST_Quantifier
+    v, x = Var(1), Var(2)
+    formula = AST_Quantifier(
+        referenced_vars=(x,), bound_vars=(v,),
+        child=AST_Negation(referenced_vars=(v, x), child=AST_Connective(
+            referenced_vars=(v, x), type=Connective_Type.AND,
+            children=(*_make_lower_and_upper_bound(v, 0, 4), Relation(vars=[x], coefs=[1], rhs=3, predicate_symbol='<='))),
+        ),
+    )
+
+    simplified_formula = _run_unconstrained_vars_pass(formula)
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_quantified_var_bounds_split_across_disjuncts_are_kept():
+    # exists v. (or (and (0 <= v) (x <= 3)) (and (v <= 4) (y <= 3))): v occurs in two different ANDs.
+    from amaya.relations_structures import AST_Quantifier
+    v, x, y = Var(1), Var(2), Var(3)
+    lower_bound_on_v, upper_bound_on_v = _make_lower_and_upper_bound(v, 0, 4)
+    formula = AST_Quantifier(
+        referenced_vars=(x, y), bound_vars=(v,),
+        child=AST_Connective(referenced_vars=(v, x, y), type=Connective_Type.OR, children=(
+            AST_Connective(referenced_vars=(v, x), type=Connective_Type.AND,
+                           children=(lower_bound_on_v, Relation(vars=[x], coefs=[1], rhs=3, predicate_symbol='<='))),
+            AST_Connective(referenced_vars=(v, y), type=Connective_Type.AND,
+                           children=(upper_bound_on_v, Relation(vars=[y], coefs=[1], rhs=3, predicate_symbol='<='))),
+        )),
+    )
+
+    simplified_formula = _run_unconstrained_vars_pass(formula)
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
 def test_implied_bound_that_is_direct_conjunct_is_kept():
     # (and (-x <= -5) (or (and (-x <= -3) (= y 1)) (= y 2))): the nested bound -x <= -3 is implied by the
     # enclosing AND, but it is a direct conjunct of the inner AND. `interval-analysis` inserts such conjuncts;

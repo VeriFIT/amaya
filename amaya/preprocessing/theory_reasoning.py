@@ -1099,6 +1099,67 @@ def scan_variable_use(root_node: ASTp_Node, var_use: Variable_Use_Info):
             raise ValueError(f'Unhandled node type when scanning variable use: {type(root_node)} :: {root_node}')
 
 
+def _drop_bounds_of_vars_used_only_in_satisfiable_bounds(conjuncts: tuple[ASTp_Node, ...],
+                                                         var_uses: Variable_Use_Info,
+                                                         desired_polarity: bool,
+                                                         binders: defaultdict[Var, tuple[int, bool]]) -> tuple[ASTp_Node, ...]:
+    """
+    Remove from `conjuncts` (the children of an AND) every single-variable Relation on a variable `v` for which:
+        1. `v` is bound by an enclosing quantifier (free variables are kept, their values are part of a model),
+        2. every occurrence of `v` in the whole formula is a single-variable Relation in `conjuncts`,
+        3. the binder of `v` has the polarity `desired_polarity`, i.e., the AND occurs positively in the
+           body of `v`'s existential quantifier, and
+        4. the Relations on `v` have a common integer solution.
+
+    Under these conditions the witness for `v` can be any value satisfying the Relations, which makes their
+    conjunction True; `v` occurs nowhere else, so the choice does not affect the rest of the formula.
+    Example: `exists v. (and (0 <= v) (v <= 4) phi)` with `v` not in `phi` becomes `phi`.
+
+    `remove_atoms_satisfied_by_unconstrained_vars` handles a variable with exactly one occurrence; this
+    function handles a variable with several occurrences that together constrain only that variable.
+    """
+    relations_by_var: dict[Var, list[Relation]] = defaultdict(list)
+    for conjunct in conjuncts:
+        if isinstance(conjunct, Relation) and len(conjunct.vars) == 1 and conjunct.coefs[0] != 0:
+            relations_by_var[conjunct.vars[0]].append(conjunct)
+
+    ids_of_relations_to_drop: set[int] = set()
+    for var, relations_on_var in relations_by_var.items():
+        if var not in binders:
+            continue
+        if binders.get(var, (0, True))[1] != desired_polarity:
+            continue
+        if len(var_uses.relation_uses[var]) != len(relations_on_var) or var_uses.congruence_uses[var]:
+            continue
+        bool_uses = var_uses.bool_var_uses.get(var)
+        if bool_uses is not None and (bool_uses.positive or bool_uses.negative):
+            continue
+
+        interval_of_var = Value_Interval()
+        is_satisfiable = True
+        for relation in relations_on_var:
+            coef, rhs = relation.coefs[0], relation.rhs
+            if relation.predicate_symbol == '<=':
+                interval_of_var.apply_assertion(relation)
+            elif relation.predicate_symbol == '=':
+                if rhs % coef != 0:
+                    is_satisfiable = False
+                    break
+                interval_of_var.try_strengthen_lower(rhs // coef)
+                interval_of_var.try_strengthen_upper(rhs // coef)
+            else:
+                is_satisfiable = False  # Predicate not handled here; keep the relations
+                break
+        if not is_satisfiable or interval_of_var.implies_contradiction():
+            continue
+
+        ids_of_relations_to_drop.update(id(relation) for relation in relations_on_var)
+
+    if not ids_of_relations_to_drop:
+        return conjuncts
+    return tuple(conjunct for conjunct in conjuncts if id(conjunct) not in ids_of_relations_to_drop)
+
+
 def remove_atoms_satisfied_by_unconstrained_vars(root_node: ASTp_Node,
                                                  var_uses: Variable_Use_Info,
                                                  desired_polarity: bool,
@@ -1171,9 +1232,9 @@ def remove_atoms_satisfied_by_unconstrained_vars(root_node: ASTp_Node,
                 bool_uses = var_uses.bool_var_uses.get(var)
                 if bool_uses is not None and (bool_uses.positive or bool_uses.negative):
                     continue  # also occurs as a Bool atom (e.g. Bool `=` translated into an integer equation)
-                var_block, binder_polarity = binders[var]
+                var_block, binder_polarity = binders.get(var, (0, True))
 
-                if any(binders[other][0] > var_block for other in root_node.vars if other != var):
+                if any(binders.get(other, (0, True))[0] > var_block for other in root_node.vars if other != var):
                     # The variable which is used only in this atom must not be bound in an earlier alternation block than any other variable of the atom in order for us to be sound
                     continue
 
@@ -1195,7 +1256,7 @@ def remove_atoms_satisfied_by_unconstrained_vars(root_node: ASTp_Node,
                     coefs_of_all_unconstrained_vars = [
                         other_coef for other_var, other_coef in zip(root_node.vars, root_node.coefs)
                         if other_coef != 0 and var_uses.is_var_used_only_once(other_var)
-                        and binders[other_var] == binders[var]
+                        and binders.get(other_var, (0, True)) == binders.get(var, (0, True))
                     ]
                     if math.gcd(*coefs_of_all_unconstrained_vars) != 1:
                         continue
@@ -1211,10 +1272,17 @@ def remove_atoms_satisfied_by_unconstrained_vars(root_node: ASTp_Node,
             if root_node.type == Connective_Type.EQUIV:
                 return root_node  # children occur in both polarities
 
+            children_to_simplify = root_node.children
+            if root_node.type == Connective_Type.AND:
+                children_to_simplify = _drop_bounds_of_vars_used_only_in_satisfiable_bounds(
+                    root_node.children, var_uses, desired_polarity, binders)
+
             new_children = tuple(
                 remove_atoms_satisfied_by_unconstrained_vars(child, var_uses, desired_polarity, binders, _block)
-                for child in root_node.children
+                for child in children_to_simplify
             )
+            if not new_children:
+                return BoolLiteral(True)
 
             result = AST_Connective(referenced_vars=(), type=root_node.type, children=new_children)
             result = result.simplify_on_anihilators()
