@@ -173,46 +173,84 @@ def copy_ast(ast: Arbitrary_AST) -> Arbitrary_AST:
 
 
 def expand_let_macros(ast: Raw_AST, macro_def_scopes: List[Dict[str, Raw_AST]]) -> Raw_AST:
-    """Perform let macro expansion."""
-    if not isinstance(ast, list):
-        # We've encountered a string leaf, check if it is bound to something, if yes, expand it.
-        for macro_def_scope in reversed(macro_def_scopes):
-            if ast in macro_def_scope:
-                return copy_ast(macro_def_scope[ast])
-        return ast
+    """
+    Perform let macro expansion.
 
-    node_name = ast[0]
+    The traversal uses an explicit work stack instead of recursion, so the nesting depth of the input
+    is not limited by the Python recursion limit.
 
-    if node_name == 'let':
-        # The new S-expressions in the let binding might contain variables pointing to previously bound S-expressions.
-        # We have to first fold in the macros carried to this node into the new S-expressions - only we can use them.
-        macro_defs = ast[1]
-        macro_defs_with_prev_macros_folded_in = [
-            (macro_name, expand_let_macros(macro_body, macro_def_scopes)) for macro_name, macro_body in macro_defs
-        ]
+    Work items on the stack:
+        ('visit', subtree)                         -- expand macros in subtree, push its result
+        ('assemble_node', node_prefix, child_count) -- pop child_count results, append them to node_prefix
+        ('enter_let_scope', macro_names)            -- pop len(macro_names) expanded bodies, open a scope
+        ('exit_let_scope',)                         -- close the innermost scope
+    """
+    work_stack: List[tuple] = [('visit', ast)]
+    expanded_result_stack: List[Raw_AST] = []
 
-        # Make a new macro definition scope, and populate it with the current macro definitions
-        macro_def_scopes.append(dict(macro_defs_with_prev_macros_folded_in))
+    connective_node_names = ('and', 'or', 'not', '=', '<=', '<', '>=', '>', '+', '-', '*', 'mod', 'div', 'ite', '=>')
 
-        # Continue down the tree, however, return only the AST subtree from the current let expr with the macros folded in - remove the let node
-        folded_subtree = expand_let_macros(ast[2], macro_def_scopes)
+    while work_stack:
+        work_item = work_stack.pop()
+        work_item_kind = work_item[0]
 
-        macro_def_scopes.pop(-1)
-        return folded_subtree
-    elif node_name in ('exists', 'forall'):
-        ast_with_folded_macros = [node_name, ast[1]]
-        for subtree in ast[2:]:
-            subtree_with_folded_macro = expand_let_macros(subtree, macro_def_scopes)
-            ast_with_folded_macros.append(subtree_with_folded_macro)
-        return ast_with_folded_macros
-    elif node_name in ('and', 'or', 'not', '=', '<=', '<', '>=', '>', '+', '-', '*', 'mod', 'div', 'ite', '=>'):
-        ast_with_folded_macros: Raw_AST = [node_name]
-        for subtree in ast[1:]:
-            subtree_with_folded_macro = expand_let_macros(subtree, macro_def_scopes)
-            ast_with_folded_macros.append(subtree_with_folded_macro)
-        return ast_with_folded_macros
-    else:
-        raise ValueError(f'Cannot fold in macros into the AST: {ast=}')
+        if work_item_kind == 'visit':
+            current_subtree = work_item[1]
+
+            if not isinstance(current_subtree, list):
+                # String leaf: expand it if it is bound by a macro in some enclosing scope.
+                expanded_leaf = current_subtree
+                for macro_def_scope in reversed(macro_def_scopes):
+                    if current_subtree in macro_def_scope:
+                        expanded_leaf = copy_ast(macro_def_scope[current_subtree])
+                        break
+                expanded_result_stack.append(expanded_leaf)
+                continue
+
+            node_name = current_subtree[0]
+
+            if node_name == 'let':
+                # Macro bodies are expanded in the enclosing scopes, then a new scope is opened for the let body.
+                # The let node itself is removed from the result. Items are pushed in reverse execution order.
+                macro_defs = current_subtree[1]
+                macro_names = [macro_name for macro_name, _ in macro_defs]
+                work_stack.append(('exit_let_scope',))
+                work_stack.append(('visit', current_subtree[2]))
+                work_stack.append(('enter_let_scope', macro_names))
+                for _, macro_body in reversed(macro_defs):
+                    work_stack.append(('visit', macro_body))
+            elif node_name in ('exists', 'forall'):
+                children_to_expand = current_subtree[2:]
+                work_stack.append(('assemble_node', [node_name, current_subtree[1]], len(children_to_expand)))
+                for child_subtree in reversed(children_to_expand):
+                    work_stack.append(('visit', child_subtree))
+            elif node_name in connective_node_names:
+                children_to_expand = current_subtree[1:]
+                work_stack.append(('assemble_node', [node_name], len(children_to_expand)))
+                for child_subtree in reversed(children_to_expand):
+                    work_stack.append(('visit', child_subtree))
+            else:
+                raise ValueError(f'Cannot fold in macros into the AST: {current_subtree=}')
+
+        elif work_item_kind == 'assemble_node':
+            _, node_prefix, child_count = work_item
+            if child_count > 0:
+                node_prefix.extend(expanded_result_stack[-child_count:])
+                del expanded_result_stack[-child_count:]
+            expanded_result_stack.append(node_prefix)
+
+        elif work_item_kind == 'enter_let_scope':
+            macro_names = work_item[1]
+            macro_count = len(macro_names)
+            expanded_macro_bodies = expanded_result_stack[len(expanded_result_stack) - macro_count:]
+            del expanded_result_stack[len(expanded_result_stack) - macro_count:]
+            macro_def_scopes.append(dict(zip(macro_names, expanded_macro_bodies)))
+
+        else:  # 'exit_let_scope'
+            macro_def_scopes.pop(-1)
+
+    assert len(expanded_result_stack) == 1
+    return expanded_result_stack[0]
 
 
 def expand_implications_handler(ast: AST_NaryNode, is_reeval: bool, ctx: Dict) -> NodeEncounteredHandlerStatus:
