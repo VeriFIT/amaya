@@ -815,3 +815,28 @@ def test_hard_bound_in_one_disjunct_does_not_affect_sibling_disjunct():
     simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
 
     assert pprint_formula(simplified_formula) == pprint_formula(formula)
+
+
+def test_implied_bound_that_is_direct_conjunct_is_kept():
+    # (and (-x <= -5) (or (and (-x <= -3) (= y 1)) (= y 2))): the nested bound -x <= -3 is implied by the
+    # enclosing AND, but it is a direct conjunct of the inner AND. `interval-analysis` inserts such conjuncts;
+    # removing them here makes the two passes alternate until the optimization pipeline stops on a cycle.
+    x, y = Var(1), Var(2)
+    formula = AST_Connective(
+        referenced_vars=(x, y),
+        type=Connective_Type.AND,
+        children=(
+            Relation(vars=[x], coefs=[-1], rhs=-5, predicate_symbol='<='),
+            AST_Connective(referenced_vars=(x, y), type=Connective_Type.OR, children=(
+                AST_Connective(referenced_vars=(x, y), type=Connective_Type.AND, children=(
+                    Relation(vars=[x], coefs=[-1], rhs=-3, predicate_symbol='<='),
+                    Relation(vars=[y], coefs=[1], rhs=1, predicate_symbol='='),
+                )),
+                Relation(vars=[y], coefs=[1], rhs=2, predicate_symbol='='),
+            )),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)

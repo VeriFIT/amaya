@@ -632,7 +632,16 @@ def _is_equation(node: ASTp_Node) -> bool:
     return isinstance(node, Relation) and node.predicate_symbol == '='
 
 
-def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: Asserted_Model_Properties) -> ASTp_Node:
+Parent_Node_Type = Connective_Type | type[AST_Negation] | type[AST_Quantifier] | None
+"""
+Type of the parent of a node visited by `_simplify_formula_using_model_properties`: the `Connective_Type` of an
+`AST_Connective` parent, the class `AST_Negation` or `AST_Quantifier` for those parents, or None for the root.
+"""
+
+
+def _simplify_formula_using_model_properties(root_node: ASTp_Node,
+                                             assertions: Asserted_Model_Properties,
+                                             parent_node_type: Parent_Node_Type = None) -> ASTp_Node:
     match root_node:
         case Var():
             asserted_value = assertions.get_asserted_values_for_bool_atom(root_node)
@@ -711,13 +720,18 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: A
                     # are consulted), so a bound they imply is True here and a bound they contradict is False.
                     known_bounds = assertions.get_hard_bounds(bound_var)
                     bound_type, _, bound_value = get_hard_bound_semantics(substituted)
+                    # An implied bound that is a direct conjunct of an AND is kept: `interval-analysis`
+                    # (`unbound_vars.py:prune_conjunctions_false_due_to_parent_context`) inserts bounds
+                    # implied by enclosing ANDs as conjuncts, and removing them here makes the two passes
+                    # alternate until the pipeline stops on a cycle.
+                    may_replace_implied_bound = parent_node_type != Connective_Type.AND
                     if bound_type == Bound_Type.LOWER:
-                        if known_bounds.lower_limit is not None and known_bounds.lower_limit >= bound_value:
+                        if may_replace_implied_bound and known_bounds.lower_limit is not None and known_bounds.lower_limit >= bound_value:
                             return BoolLiteral(True)
                         if known_bounds.upper_limit is not None and known_bounds.upper_limit < bound_value:
                             return BoolLiteral(False)
                     else:
-                        if known_bounds.upper_limit is not None and known_bounds.upper_limit <= bound_value:
+                        if may_replace_implied_bound and known_bounds.upper_limit is not None and known_bounds.upper_limit <= bound_value:
                             return BoolLiteral(True)
                         if known_bounds.lower_limit is not None and known_bounds.lower_limit > bound_value:
                             return BoolLiteral(False)
@@ -775,7 +789,7 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: A
                     assertions.insert_stack()
                     for child_index in child_indices_in_visit_order:
                         new_children_by_index[child_index] = _simplify_formula_using_model_properties(
-                            root_node.children[child_index], assertions)
+                            root_node.children[child_index], assertions, parent_node_type=root_node.type)
                     assertions.pop_stack()
                     new_children = tuple(new_children_by_index[child_index]
                                          for child_index in range(len(root_node.children)))
@@ -793,7 +807,8 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: A
                     for subformula in root_node.children:
                         assertions.insert_stack()
                         assertions.enter_branch()
-                        new_child = _simplify_formula_using_model_properties(subformula, assertions)
+                        new_child = _simplify_formula_using_model_properties(subformula, assertions,
+                                                                             parent_node_type=root_node.type)
                         assertions.exit_branch()
                         assertions.pop_stack()
 
@@ -826,7 +841,8 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: A
 
             
             assertions.enter_negation()
-            new_child = _simplify_formula_using_model_properties(root_node.child, assertions)
+            new_child = _simplify_formula_using_model_properties(root_node.child, assertions,
+                                                                 parent_node_type=AST_Negation)
             assertions.exit_negation()
 
             if isinstance(new_child, BoolLiteral):
@@ -842,7 +858,8 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: A
             # give every quantifier body its own frame, so facts that depend on the bound
             # variables (capped to `find_quantifier_scope_binding_var`) can never outlive the binder.
             assertions.insert_quantifier_body_stack(root_node.bound_vars)
-            new_child = _simplify_formula_using_model_properties(root_node.child, assertions)
+            new_child = _simplify_formula_using_model_properties(root_node.child, assertions,
+                                                                 parent_node_type=AST_Quantifier)
             assertions.pop_stack()
 
             if isinstance(new_child, BoolLiteral):
