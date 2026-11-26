@@ -11,12 +11,14 @@ from amaya.relations_structures import (
     ASTp_Node,
     ASTp_Node_Base,
     BoolLiteral,
+    Bound_Type,
     Congruence,
     Connective_Type,
     Relation,
     Value_Interval,
     Var,
     ast_references_var,
+    get_hard_bound_semantics,
     pprint_formula
 )
 
@@ -703,6 +705,23 @@ def _simplify_formula_using_model_properties(root_node: ASTp_Node, assertions: A
                     bound_var = substituted.vars[0]
                     if bound_var in assertions.vars_covered_by_congruence_bounds:
                         return BoolLiteral(True)
+
+                    # Every stored bound holds wherever the current node is evaluated (bounds are stored
+                    # only when unconditionally true for their frame, and only frames that are still open
+                    # are consulted), so a bound they imply is True here and a bound they contradict is False.
+                    known_bounds = assertions.get_hard_bounds(bound_var)
+                    bound_type, _, bound_value = get_hard_bound_semantics(substituted)
+                    if bound_type == Bound_Type.LOWER:
+                        if known_bounds.lower_limit is not None and known_bounds.lower_limit >= bound_value:
+                            return BoolLiteral(True)
+                        if known_bounds.upper_limit is not None and known_bounds.upper_limit < bound_value:
+                            return BoolLiteral(False)
+                    else:
+                        if known_bounds.upper_limit is not None and known_bounds.upper_limit <= bound_value:
+                            return BoolLiteral(True)
+                        if known_bounds.lower_limit is not None and known_bounds.lower_limit > bound_value:
+                            return BoolLiteral(False)
+
                     if assertions.is_unconditionally_true_for_current_stack_frame():
                         # Promoted to the widest frame the bound is unconditionally valid throughout,
                         # same as equations, so it stays visible to sibling branches nested under the

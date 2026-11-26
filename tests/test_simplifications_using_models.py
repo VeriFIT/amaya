@@ -746,3 +746,72 @@ def test_congruence_over_quantified_var_is_dropped_when_free_vars_may_be_constra
     result = simplify_formula_using_model_properties(formula, assertions)
 
     assert not _contains_congruence(result)
+
+
+def test_hard_bound_implied_by_enclosing_conjunction_is_replaced_by_true():
+    # (and (-x <= -5) (<= y 3) (or (= y 1) (-x <= -3)))  ---->  (and (-x <= -5) (<= y 3))
+    x, y = Var(1), Var(2)
+    lower_bound_on_x = Relation(vars=[x], coefs=[-1], rhs=-5, predicate_symbol='<=')
+    upper_bound_on_y = Relation(vars=[y], coefs=[1], rhs=3, predicate_symbol='<=')
+    formula = AST_Connective(
+        referenced_vars=(x, y),
+        type=Connective_Type.AND,
+        children=(
+            lower_bound_on_x,
+            upper_bound_on_y,
+            AST_Connective(
+                referenced_vars=(x, y),
+                type=Connective_Type.OR,
+                children=(
+                    Relation(vars=[y], coefs=[1], rhs=1, predicate_symbol='='),
+                    Relation(vars=[x], coefs=[-1], rhs=-3, predicate_symbol='<='),
+                ),
+            ),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert pprint_formula(simplified_formula) == pprint_formula(
+        AST_Connective(referenced_vars=(x, y), type=Connective_Type.AND, children=(lower_bound_on_x, upper_bound_on_y)))
+
+
+def test_hard_bound_contradicted_by_enclosing_conjunction_is_replaced_by_false():
+    # (and (-x <= -5) (or (= y 1) (<= x 4)))  ---->  (and (-x <= -5) (= y 1))
+    x, y = Var(1), Var(2)
+    lower_bound_on_x = Relation(vars=[x], coefs=[-1], rhs=-5, predicate_symbol='<=')
+    y_equals_one = Relation(vars=[y], coefs=[1], rhs=1, predicate_symbol='=')
+    formula = AST_Connective(
+        referenced_vars=(x, y),
+        type=Connective_Type.AND,
+        children=(
+            lower_bound_on_x,
+            AST_Connective(
+                referenced_vars=(x, y),
+                type=Connective_Type.OR,
+                children=(y_equals_one, Relation(vars=[x], coefs=[1], rhs=4, predicate_symbol='<=')),
+            ),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert pprint_formula(simplified_formula) == pprint_formula(
+        AST_Connective(referenced_vars=(x, y), type=Connective_Type.AND, children=(lower_bound_on_x, y_equals_one)))
+
+
+def test_hard_bound_in_one_disjunct_does_not_affect_sibling_disjunct():
+    # (or (-x <= -5) (-x <= -3)) must stay unchanged: the first disjunct does not hold in the second.
+    x = Var(1)
+    formula = AST_Connective(
+        referenced_vars=(x,),
+        type=Connective_Type.OR,
+        children=(
+            Relation(vars=[x], coefs=[-1], rhs=-5, predicate_symbol='<='),
+            Relation(vars=[x], coefs=[-1], rhs=-3, predicate_symbol='<='),
+        ),
+    )
+
+    simplified_formula = simplify_formula_using_model_properties(formula, Asserted_Model_Properties())
+
+    assert pprint_formula(simplified_formula) == pprint_formula(formula)
