@@ -1367,6 +1367,14 @@ def evaluate_exists_expr(exists_expr: AST_Quantifier, ctx: EvaluationContext, _d
 
     logger.debug(f'Established projection order: {vars_to_project}')
 
+    if using_mtbdds and solver_config.backend.reduce_by_simulation_before_projection:
+        from amaya.mtbdd_transitions import MTBDDTransitionFn
+        unreduced_state_count = len(nfa.states)
+        nfa = MTBDDTransitionFn.reduce_nfa_by_forward_simulation(cast(MTBDD_NFA, nfa),
+                                                                 solver_config.backend.simulation_reduction_max_states,
+                                                                 minimize_if_deterministic=True)
+        logger.debug('Reduction before projection: #states %d -> %d', unreduced_state_count, len(nfa.states))
+
     last_var_to_project = vars_to_project[-1]
     for var in vars_to_project:
         logger.debug(f'Projecting away variable {var}')

@@ -533,14 +533,20 @@ std::set<State> NFA::get_state_post(State state) {
 
 void NFA::remove_states(std::set<State>& states_to_remove) {
     LACE_ME;
+    // The operation cache is keyed by a fresh operation id: keyed by the address of `states_to_remove`, a
+    // later call whose set lives at the same address would reuse the leaves computed for another set.
+    const u64 operation_id = get_next_operation_id();
+    const State_Removal_Lookup state_removal_lookup(states_to_remove);
     for (auto transitions_it = transitions.begin(); transitions_it != transitions.end(); ) {
         auto [state, state_transitions] = *transitions_it;
 
         if (states_to_remove.contains(state)) {
+            sylvan::mtbdd_deref(state_transitions);
             transitions_it = transitions.erase(transitions_it);
         } else {
             using namespace sylvan;
-            MTBDD new_state_transitions = mtbdd_uapply(state_transitions, TASK(remove_states2_op), reinterpret_cast<u64>(&states_to_remove));
+            MTBDD new_state_transitions = mtbdd_uapplyp(state_transitions, TASK(remove_states2_op), operation_id,
+                                                        reinterpret_cast<u64>(&state_removal_lookup));
             sylvan::mtbdd_deref(state_transitions);
             sylvan::mtbdd_ref(new_state_transitions);
             transitions[state] = new_state_transitions;
@@ -626,45 +632,56 @@ MTBDD compute_states_reaching_set_by_repeated_symbol(NFA& nfa, std::set<State>& 
 }
 
 
-std::set<State> compute_states_reaching_set(NFA nfa, std::set<State>& states_to_reach) {
-    std::set<State> reaching_states(states_to_reach);
-    std::set<State> potential_states;
-    std::set_difference(nfa.states.begin(), nfa.states.end(),
-                        states_to_reach.begin(), states_to_reach.end(),
-                        std::inserter(potential_states, potential_states.end()));
-
-    // @Optimize: A hash table would not be needed here, if we are sure that nfa states always span integers in [0, states.size()-1]
-    std::unordered_map<State, std::set<State>> state_posts;
-    for (State state: potential_states) {
-        state_posts[state] = nfa.get_state_post(state);;
+static void collect_distinct_leaves_rec(MTBDD node, std::unordered_set<MTBDD>& visited, std::vector<MTBDD>& leaves) {
+    if (node == sylvan::mtbdd_false || !visited.insert(node).second) return;
+    if (sylvan::mtbdd_isleaf(node)) {
+        leaves.push_back(node);
+        return;
     }
+    collect_distinct_leaves_rec(sylvan::mtbdd_getlow(node), visited, leaves);
+    collect_distinct_leaves_rec(sylvan::mtbdd_gethigh(node), visited, leaves);
+}
 
-    bool was_fixed_point_found = false;
-    u64 reaching_set_size = reaching_states.size();  // It is sufficient to just check whether the state partition is still growing
-
-    u64 total_post_size = 0;
-    for (auto [state, post]: state_posts) {
-        total_post_size += post.size();
-    }
-
-    // std::cout << "Average post size: " << static_cast<double>(total_post_size) / static_cast<double>(state_posts.size()) << std::endl;
-
-    while (!was_fixed_point_found) {
+/*
+Backward breadth-first search from `states_to_reach`. The predecessor relation is indexed by MTBDD leaf
+(the origins whose transition MTBDD contains the leaf, and the leaves containing each destination), since
+the transition MTBDDs of different states share leaves: the index has one entry per (origin, distinct leaf)
+and per (distinct leaf, destination) instead of one per (origin, destination).
+*/
+std::set<State> compute_states_reaching_set(const NFA& nfa, const std::set<State>& states_to_reach) {
+    std::unordered_map<MTBDD, std::vector<State>> origins_of_leaf;
+    std::unordered_set<MTBDD> visited_nodes;
+    std::vector<MTBDD> leaves_of_origin;
+    for (auto& [origin, transitions_of_origin] : nfa.transitions) {
         AMAYA_CHECK_INTERRUPT();
+        visited_nodes.clear();
+        leaves_of_origin.clear();
+        collect_distinct_leaves_rec(transitions_of_origin, visited_nodes, leaves_of_origin);
+        for (MTBDD leaf : leaves_of_origin) origins_of_leaf[leaf].push_back(origin);
+    }
 
-        for (auto potential_states_it = potential_states.begin(); potential_states_it != potential_states.end(); ) {
-            auto state = *potential_states_it;
-            auto& state_post = state_posts[state];
+    std::unordered_map<State, std::vector<MTBDD>> leaves_containing_state;
+    leaves_containing_state.reserve(nfa.states.size());
+    for (auto& [leaf, origins] : origins_of_leaf) {
+        auto leaf_contents = reinterpret_cast<Transition_Destination_Set*>(sylvan::mtbdd_getvalue(leaf));
+        for (State destination : leaf_contents->destination_set) leaves_containing_state[destination].push_back(leaf);
+    }
 
-            if (!is_set_intersection_empty(state_post.begin(), state_post.rbegin(), state_post.end(), reaching_states.begin(), reaching_states.rbegin(), reaching_states.end())) {
-                reaching_states.insert(state);
-                potential_states_it = potential_states.erase(potential_states_it);
-            } else {
-                ++potential_states_it;
+    std::set<State> reaching_states(states_to_reach);
+    std::unordered_set<MTBDD> expanded_leaves;
+    std::vector<State> worklist(states_to_reach.begin(), states_to_reach.end());
+    while (!worklist.empty()) {
+        State state = worklist.back();
+        worklist.pop_back();
+
+        auto leaves_it = leaves_containing_state.find(state);
+        if (leaves_it == leaves_containing_state.end()) continue;
+        for (MTBDD leaf : leaves_it->second) {
+            if (!expanded_leaves.insert(leaf).second) continue;
+            for (State origin : origins_of_leaf[leaf]) {
+                if (reaching_states.insert(origin).second) worklist.push_back(origin);
             }
         }
-        was_fixed_point_found = reaching_set_size == reaching_states.size();
-        reaching_set_size = reaching_states.size();
     }
 
     return reaching_states;
@@ -683,7 +700,7 @@ void remove_nonfinishing_states(NFA& nfa) {
                         states_reaching_final.begin(), states_reaching_final.end(),
                         std::inserter(states_to_remove, states_to_remove.begin()));
 
-    nfa.remove_states(states_to_remove);
+    if (!states_to_remove.empty()) nfa.remove_states(states_to_remove);
 
     if (nfa.states.empty()) {
         nfa.states.insert(1);
@@ -838,12 +855,17 @@ NFA compute_nfa_intersection(NFA& left, NFA& right) {
 extern u64 union_applied_cnt;
 
 NFA determinize_nfa(NFA& nfa) {
+    return determinize_nfa_with_macrostate_pruning(nfa, nullptr);
+}
+
+NFA determinize_nfa_with_macrostate_pruning(NFA& nfa, const std::function<void(Macrostate&)>* prune_macrostate) {
     LACE_ME;
     Interrupt_Guard interrupt_guard;
     NFA result(nfa.vars, nfa.var_count);
 
     std::vector<std::pair<const Macrostate, State>*> work_queue;
-    Determinization_Context ctx = {.known_macrostates = {}, .work_queue = work_queue, .is_trapstate_needed=false};
+    Determinization_Context ctx = {.known_macrostates = {}, .work_queue = work_queue, .is_trapstate_needed=false,
+                                   .prune_macrostate = prune_macrostate};
 
     // Speculatively prepare trap state in case it is needed
     {
@@ -856,6 +878,7 @@ NFA determinize_nfa(NFA& nfa) {
     // Prepare intitial state and populate work queue
     {
         Macrostate initial_state(nfa.initial_states.begin(), nfa.initial_states.end());
+        if (prune_macrostate != nullptr) (*prune_macrostate)(initial_state);
         State initial_handle = static_cast<State>(ctx.known_macrostates.size());
         auto emplace_status = ctx.known_macrostates.emplace(initial_state, initial_handle);
         result.initial_states.insert(initial_handle);

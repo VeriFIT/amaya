@@ -7,6 +7,7 @@
 #define INTERSECTION_REMOVE_NONFINISHING_STATES 0
 
 #include <chrono>
+#include <functional>
 #include <iostream>
 #include <vector>
 #include <set>
@@ -119,13 +120,41 @@ struct NFA {
         for (auto& [state, mtbdd] : transitions) sylvan::mtbdd_ref(mtbdd);
     }
 
-    // Note: this is not a "real" move constructor (it does not steal `other`'s resources - `other` remains
-    // a fully valid, independent NFA afterwards). It exists only so that returning a NFA by value type-checks
-    // in contexts that require a move constructor to be present; the compiler elides the copy in all of the
-    // (NRVO/RVO) return-by-value paths actually used in this codebase.
-    NFA(NFA&& other) : states(other.states), initial_states(other.initial_states), final_states(other.final_states), vars(other.vars), var_count(other.var_count), transitions(other.transitions) {
-        sylvan::mtbdd_ref(vars);
-        for (auto& [state, mtbdd] : transitions) sylvan::mtbdd_ref(mtbdd);
+    // Takes over `other`'s states, transitions and the references it holds; `other` is left as an empty
+    // NFA over no variables, holding no references. The Cython wrapper moves every NFA a backend
+    // function returns into the heap-allocated NFA of its PyNFA (`move` in wrapper/base.pyx).
+    NFA(NFA&& other) : states(std::move(other.states)), final_states(std::move(other.final_states)),
+                       initial_states(std::move(other.initial_states)), transitions(std::move(other.transitions)),
+                       flags(other.flags), vars(other.vars), var_count(other.var_count) {
+        other.release_into_empty_nfa();
+    }
+
+    NFA& operator=(NFA&& other) {
+        if (this == &other) return *this;
+        sylvan::mtbdd_deref(this->vars);
+        for (auto& [state, mtbdd] : this->transitions) sylvan::mtbdd_deref(mtbdd);
+
+        this->states         = std::move(other.states);
+        this->initial_states = std::move(other.initial_states);
+        this->final_states   = std::move(other.final_states);
+        this->transitions    = std::move(other.transitions);
+        this->flags          = other.flags;
+        this->vars           = other.vars;
+        this->var_count      = other.var_count;
+
+        other.release_into_empty_nfa();
+        return *this;
+    }
+
+    /** Forget the states, transitions and variables without dereferencing them; their references were moved out. */
+    void release_into_empty_nfa() {
+        states.clear();
+        initial_states.clear();
+        final_states.clear();
+        transitions.clear();
+        flags = 0u;
+        vars = sylvan::mtbdd_set_empty();
+        var_count = 0;
     }
 
     NFA& operator=(const NFA& other) {
@@ -197,9 +226,38 @@ struct NFA {
 
 NFA compute_nfa_intersection(NFA& left, NFA& right);
 void remove_nonfinishing_states(NFA& nfa);
-std::set<State> compute_states_reaching_set(NFA nfa, std::set<State>& states_to_reach);
+std::set<State> compute_states_reaching_set(const NFA& nfa, const std::set<State>& states_to_reach);
 NFA determinize_nfa(NFA& nfa);
+
+/*
+The subset construction of determinize_nfa, with `prune_macrostate` (if not null) applied to every macrostate,
+the initial one included, before it is looked up among the known macrostates. The result accepts the language
+of `nfa` if pruning never changes the union of the languages of a macrostate's members.
+*/
+NFA determinize_nfa_with_macrostate_pruning(NFA& nfa, const std::function<void(Macrostate&)>* prune_macrostate);
+
 NFA minimize_hopcroft(NFA& nfa);
+
+/*
+Removes useless states, merges simulation-equivalent states, prunes destinations strictly simulated by
+another destination of the same transition, and removes unreachable states, using the maximal forward
+direct simulation (see src/simulation_reduction.cpp). The result accepts the same language and is an
+NFA, except for a deterministic `nfa`, which is minimized (a complete minimal DFA) if
+`minimize_if_deterministic` is set and returned unchanged otherwise. With `max_states` > 0, an automaton with more states (after removing useless states) is returned
+with only the useless states removed.
+*/
+NFA reduce_nfa_by_forward_simulation(NFA& nfa, u64 max_states, bool minimize_if_deterministic);
+
+/*
+reduce_nfa_by_forward_simulation (without minimization) followed by the subset construction, in which every
+macrostate drops each member whose language is included in that of another member (by the simulation relation
+computed during the reduction; of two simulation-equivalent members the larger state is dropped). The result is
+a complete DFA accepting the language of `nfa`, in general not minimal. Without a relation (a deterministic
+`nfa`, or more than `max_states` states), it is determinize_nfa of the reduced automaton.
+*/
+NFA determinize_nfa_pruned_by_simulation(NFA& nfa, u64 max_states);
+
+void collect_reachable_states_from_mtbdd_leaves(sylvan::MTBDD root, std::set<State>& output);
 
 /*
 Renames the automaton's tracks (MTBDD variables) according to `renaming` (old var id -> new var id;

@@ -17,7 +17,7 @@ AMAYA_PKG_DIR := ../amaya
 # a build from a fresh checkout, would fail with "No such file or directory" on build/*.o.
 OBJECTS := build/lazy-tests.o build/lazy.o build/wrapper.o build/operations.o build/custom_leaf.o \
            build/base.o build/vectors.o build/pareto_set.o build/rewrites.o build/tfa_leaf.o \
-           build/bit_set.o build/bit_set_leaf.o build/algorithms.o build/interrupt.o build/sylvan-extra.o build/test.o
+           build/bit_set.o build/bit_set_leaf.o build/algorithms.o build/interrupt.o build/simulation_reduction.o build/sylvan-extra.o build/test.o
 
 $(OBJECTS): | build
 

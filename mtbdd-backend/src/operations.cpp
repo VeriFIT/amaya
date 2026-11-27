@@ -491,6 +491,7 @@ TASK_IMPL_2(MTBDD, replace_macrostates_with_handles_op, MTBDD, dd, size_t, param
     Macrostate macrostate(leaf_contents->destination_set.begin(), leaf_contents->destination_set.end());
 
     auto ctx = reinterpret_cast<Determinization_Context*>(param);
+    if (ctx->prune_macrostate != nullptr) (*ctx->prune_macrostate)(macrostate);
     auto [known_macrostates_elem, was_inserted] = ctx->known_macrostates.emplace(macrostate, ctx->known_macrostates.size());
 
     if (was_inserted) ctx->work_queue.push_back(&(*known_macrostates_elem));
@@ -503,17 +504,31 @@ TASK_IMPL_2(MTBDD, replace_macrostates_with_handles_op, MTBDD, dd, size_t, param
     return new_leaf;
 }
 
+State_Removal_Lookup::State_Removal_Lookup(const std::set<State>& states_to_remove) : states_to_remove(states_to_remove) {
+    const u64 max_bitmap_size_per_removed_state = 64;
+    if (states_to_remove.empty()) return;
+    State largest_state = *states_to_remove.rbegin();
+    if (largest_state / max_bitmap_size_per_removed_state >= states_to_remove.size()) return;
+
+    is_state_removed.resize(largest_state + 1, false);
+    for (State state : states_to_remove) is_state_removed[state] = true;
+}
+
 TASK_IMPL_2(MTBDD, remove_states2_op, MTBDD, dd, size_t, param) {
     if (dd == mtbdd_false) return mtbdd_false;
 
     if (mtbdd_isleaf(dd)) {
-        auto states_to_remove = reinterpret_cast<std::set<State>*>(param);
+        // One pass over the leaf: a set difference against the (possibly much larger) set of removed
+        // states would walk the whole set for every leaf.
+        auto states_to_remove = reinterpret_cast<const State_Removal_Lookup*>(param);
         auto leaf_contents = reinterpret_cast<Transition_Destination_Set*>(mtbdd_getvalue(dd));
 
         Transition_Destination_Set new_leaf_contents;
-        std::set_difference(leaf_contents->destination_set.begin(), leaf_contents->destination_set.end(),
-                            states_to_remove->begin(), states_to_remove->end(),
-                            std::inserter(new_leaf_contents.destination_set, new_leaf_contents.destination_set.begin()));
+        new_leaf_contents.destination_set.reserve(leaf_contents->destination_set.size());
+        for (State state : leaf_contents->destination_set) {
+            if (!states_to_remove->contains(state)) new_leaf_contents.destination_set.push_back(state);
+        }
+        if (new_leaf_contents.destination_set.size() == leaf_contents->destination_set.size()) return dd;
 
         MTBDD leaf = make_set_leaf(&new_leaf_contents);
         return leaf;

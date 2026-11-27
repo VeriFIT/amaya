@@ -135,6 +135,8 @@ cdef extern from "base.hpp":
     void c_remove_nonfinishing_states "remove_nonfinishing_states"(NFA& nfa) except +
     NFA c_determinize_nfa "determinize_nfa"(NFA& nfa) except +
     NFA c_minimize_hopcroft "minimize_hopcroft"(NFA& nfa) except +
+    NFA c_reduce_nfa_by_forward_simulation "reduce_nfa_by_forward_simulation"(NFA& nfa, u64 max_states, bint minimize_if_deterministic) except +
+    NFA c_determinize_nfa_pruned_by_simulation "determinize_nfa_pruned_by_simulation"(NFA& nfa, u64 max_states) except +
     NFA c_rename_vars "rename_vars"(NFA& nfa, unordered_map[u32, u32]& renaming) except +
 
 
@@ -332,7 +334,7 @@ def compute_nfa_intersection(PyNFA left, PyNFA right):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_compute_nfa_intersection(left._c_nfa[0], right._c_nfa[0]))
+        result._c_nfa = new NFA(move(c_compute_nfa_intersection(left._c_nfa[0], right._c_nfa[0])))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -343,7 +345,7 @@ def determinize_nfa(PyNFA nfa):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_determinize_nfa(nfa._c_nfa[0]))
+        result._c_nfa = new NFA(move(c_determinize_nfa(nfa._c_nfa[0])))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -354,7 +356,29 @@ def minimize_hopcroft(PyNFA nfa):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_minimize_hopcroft(nfa._c_nfa[0]))
+        result._c_nfa = new NFA(move(c_minimize_hopcroft(nfa._c_nfa[0])))
+    except RuntimeError as err:
+        _reraise_interrupt(err)
+    return result
+
+
+def determinize_nfa_pruned_by_simulation(PyNFA nfa, u64 max_states):
+    result = PyNFA()
+    del result._c_nfa
+    result._c_nfa = NULL
+    try:
+        result._c_nfa = new NFA(move(c_determinize_nfa_pruned_by_simulation(nfa._c_nfa[0], max_states)))
+    except RuntimeError as err:
+        _reraise_interrupt(err)
+    return result
+
+
+def reduce_nfa_by_forward_simulation(PyNFA nfa, u64 max_states, bint minimize_if_deterministic):
+    result = PyNFA()
+    del result._c_nfa
+    result._c_nfa = NULL
+    try:
+        result._c_nfa = new NFA(move(c_reduce_nfa_by_forward_simulation(nfa._c_nfa[0], max_states, minimize_if_deterministic)))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -382,7 +406,7 @@ def rename_vars(PyNFA nfa, dict renaming):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_rename_vars(nfa._c_nfa[0], c_renaming))
+        result._c_nfa = new NFA(move(c_rename_vars(nfa._c_nfa[0], c_renaming)))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -393,7 +417,7 @@ def perform_pad_closure_using_bit_sets(PyNFA nfa):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_perform_pad_closure_using_bit_sets(nfa._c_nfa[0]))
+        result._c_nfa = new NFA(move(c_perform_pad_closure_using_bit_sets(nfa._c_nfa[0])))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -414,7 +438,7 @@ def construct_nfa_from_ineq(coefs, s64 rhs, vars):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_nfa_from_ineq(&atom, rhs, var_set, c_vars.size()))
+        result._c_nfa = new NFA(move(c_construct_nfa_from_ineq(&atom, rhs, var_set, c_vars.size())))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -434,7 +458,7 @@ def construct_nfa_from_eq(coefs, s64 rhs, vars):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_nfa_from_eq(&atom, rhs, var_set, c_vars.size()))
+        result._c_nfa = new NFA(move(c_construct_nfa_from_eq(&atom, rhs, var_set, c_vars.size())))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -454,7 +478,7 @@ def construct_nfa_from_congruence(coefs, s64 modulus, s64 rhs, vars):
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_nfa_from_congruence(&atom, rhs, var_set, c_vars.size()))
+        result._c_nfa = new NFA(move(c_construct_nfa_from_congruence(&atom, rhs, var_set, c_vars.size())))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -504,8 +528,8 @@ def construct_nfa_from_congruence_with_bounded_var(coefs, s64 modulus, s64 rhs, 
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_nfa_from_congruence_with_bounded_var(
-            &atom, rhs, c_bound_var_idx, lower_bound, upper_bound, var_set, c_vars.size()))
+        result._c_nfa = new NFA(move(c_construct_nfa_from_congruence_with_bounded_var(
+            &atom, rhs, c_bound_var_idx, lower_bound, upper_bound, var_set, c_vars.size())))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -559,7 +583,7 @@ def construct_dfa_for_atom_conjunction(atoms, initial_state, vars, quantified_va
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_dfa_for_atom_conjunction(&conjunction, stop_after_first_accepting_macrostate))
+        result._c_nfa = new NFA(move(c_construct_dfa_for_atom_conjunction(&conjunction, stop_after_first_accepting_macrostate)))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result
@@ -612,8 +636,8 @@ def construct_atom_conjunction_intersected_with_nfa(atoms, initial_state, vars, 
     del result._c_nfa
     result._c_nfa = NULL
     try:
-        result._c_nfa = new NFA(c_construct_atom_conjunction_intersected_with_nfa(&conjunction, nfa._c_nfa[0],
-                                                                                  stop_after_first_accepting_state))
+        result._c_nfa = new NFA(move(c_construct_atom_conjunction_intersected_with_nfa(&conjunction, nfa._c_nfa[0],
+                                                                                       stop_after_first_accepting_state)))
     except RuntimeError as err:
         _reraise_interrupt(err)
     return result

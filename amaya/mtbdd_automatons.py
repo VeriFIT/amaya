@@ -149,6 +149,10 @@ class MTBDD_NFA(NFA):
     def intersection(self, other: MTBDD_NFA, metastate_map: Optional[Dict[int, Tuple[int, int]]] = None):
         logger.info('Performing intersection of two automata of size %d and %d', len(self.states), len(other.states))
         result = MTBDDTransitionFn.compute_nfa_intersection(self, other)
+        # The product of two DFAs has one initial state and at most one successor per state and symbol;
+        # it is complete whenever both operands are complete.
+        if (self.automaton_type & AutomatonType.DFA) and (other.automaton_type & AutomatonType.DFA):
+            result.automaton_type = AutomatonType.DFA
         logger.info('Intersection done: result size=%d, left operand size: %d , right operand size: %d', len(result.states), len(self.states), len(other.states))
         return result
 
@@ -167,7 +171,10 @@ class MTBDD_NFA(NFA):
         # @Todo: Before simplification, this method previously called: mtbdd union, mtbdd rename, get leaves.
         #        Check whether any of these API calls can be removed.
         logger.debug('Performing MTBDD NFA determinization. Automaton size: #states=%d', len(self.states))
-        dfa = MTBDDTransitionFn.determinize(self)
+        if solver_config.backend.reduce_by_simulation_before_determinization:
+            dfa = MTBDDTransitionFn.determinize_pruned_by_simulation(self, solver_config.backend.simulation_reduction_max_states)
+        else:
+            dfa = MTBDDTransitionFn.determinize(self)
         logger.debug('MTBDD NFA determinization done. Results size: #states=%d', len(dfa.states))
         return dfa
 

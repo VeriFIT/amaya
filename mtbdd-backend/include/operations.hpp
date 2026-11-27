@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <functional>
 
 #include <sylvan.h>
 #include "../include/bit_set.hpp"
@@ -73,6 +74,22 @@ TASK_DECL_2(sylvan::MTBDD, replace_macrostates_with_handles_op, sylvan::MTBDD, s
 TASK_DECL_2(sylvan::MTBDD, remove_states2_op, sylvan::MTBDD, size_t);
 
 
+/*
+Membership in a set of states to remove, the parameter of `remove_states2_op`: a bitmap over state ids
+when the largest id is at most a fixed multiple of the set size, the set itself otherwise.
+*/
+struct State_Removal_Lookup {
+    const std::set<State>& states_to_remove;
+    std::vector<bool> is_state_removed;
+
+    explicit State_Removal_Lookup(const std::set<State>& states_to_remove);
+
+    bool contains(State state) const {
+        if (is_state_removed.empty()) return states_to_remove.contains(state);
+        return state < is_state_removed.size() && is_state_removed[state];
+    }
+};
+
 struct Replace_States_With_Partition_Info {
     std::unordered_map<State, State> state_to_eq_class_id;
 };
@@ -100,8 +117,19 @@ struct Intersection_Discovery {
     State handle;
 };
 
+struct Product_State_Hash {
+    std::size_t operator()(const std::pair<State, State>& product_state) const {
+        // Splitmix64 finalizer over both components: product states of one intersection have small, dense handles.
+        u64 mixed = static_cast<u64>(product_state.first) * 0x9e3779b97f4a7c15ULL ^ static_cast<u64>(product_state.second);
+        mixed = (mixed ^ (mixed >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebULL;
+        return static_cast<std::size_t>(mixed ^ (mixed >> 31));
+    }
+};
+
 struct Intersection_Info2 {
-    std::map<std::pair<State, State>, State> seen_products;
+    // Only looked up and inserted into, never iterated; handles are assigned in insertion order.
+    std::unordered_map<std::pair<State, State>, State, Product_State_Hash> seen_products;
     std::vector<Intersection_Discovery>& work_queue;
 
 #if INTERSECTION_DETECT_STATES_WITH_NO_POST
@@ -118,6 +146,7 @@ struct Determinization_Context {
     std::vector<std::pair<const Macrostate, State>*>& work_queue;
     bool is_trapstate_needed;
     State trapstate_handle;
+    const std::function<void(Macrostate&)>* prune_macrostate;  // Applied to every macrostate before it is interned; may be null
 };
 
 #endif
