@@ -1,0 +1,30 @@
+# Image localhost/amaya-bench:cvc5 = an Amaya image + the cvc5 1.4.2 static binary at /usr/local/bin/cvc5.
+# Used by benchmarks/bench/cvc5-podman.yaml for both methods (cvc5 alone; amaya convert followed by cvc5),
+# so that both run in the same environment.
+#
+# Built by benchmarks/containers/build-images.sh (target `cvc5`), which first builds
+# localhost/amaya-bench:cvc5-base from revision ${CVC5_AMAYA_REVISION:-HEAD} and passes it as AMAYA_BASE_IMAGE.
+# The Amaya revision is in the inherited image label `amaya.revision`.
+ARG AMAYA_BASE_IMAGE=localhost/amaya-bench:cvc5-base
+FROM ${AMAYA_BASE_IMAGE}
+
+ARG CVC5_RELEASE_URL=https://github.com/cvc5/cvc5/releases/download/cvc5-1.4.2/cvc5-Linux-x86_64-static.zip
+ARG CVC5_RELEASE_SHA256=7eb18f8c814c36a46c5a7d003983e9cfbc4b0a9828d6dd596239291bd4cc61d8
+
+# The base image has python3 but neither curl nor unzip; python3 downloads, verifies and extracts the archive.
+RUN python3 - "${CVC5_RELEASE_URL}" "${CVC5_RELEASE_SHA256}" <<'PYTHON'
+import hashlib, io, os, sys, urllib.request, zipfile
+release_url, expected_sha256 = sys.argv[1], sys.argv[2]
+archive_bytes = urllib.request.urlopen(release_url).read()
+actual_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+if actual_sha256 != expected_sha256:
+    sys.exit(f'cvc5 archive checksum mismatch: expected {expected_sha256}, got {actual_sha256}')
+with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+    binary_member = next(name for name in archive.namelist() if name.endswith('/bin/cvc5'))
+    with open('/usr/local/bin/cvc5', 'wb') as binary_file:
+        binary_file.write(archive.read(binary_member))
+os.chmod('/usr/local/bin/cvc5', 0o755)
+PYTHON
+
+RUN cvc5 --version | head -1
+LABEL cvc5.release="1.4.2"

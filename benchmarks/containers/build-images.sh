@@ -1,13 +1,16 @@
 #!/bin/bash
 # Builds the podman images used by benchmarks/bench/amaya-podman.yaml.
 #
-# usage: build-images.sh [cav_2024] [devel]   (default: both)
+# usage: build-images.sh [cav_2024] [devel] [cvc5]   (default: cav_2024 devel)
 #
 # Each image is built from `git archive <revision>`, i.e., from committed
 # content only; untracked and modified files in the working tree are not part
 # of the image.
 #   amaya-bench:cav_2024  <- tag cav_2024, benchmarks/containers/Containerfile.cav_2024
 #   amaya-bench:devel     <- branch devel, the Dockerfile at the root of that revision
+#   amaya-bench:cvc5-base <- revision ${CVC5_AMAYA_REVISION:-HEAD}, the Dockerfile at the root of that revision
+#   amaya-bench:cvc5      <- amaya-bench:cvc5-base + cvc5 1.4.2, benchmarks/containers/Containerfile.cvc5
+#                            (used by benchmarks/bench/cvc5-podman.yaml)
 # The source commit is stored in the image label `amaya.revision`.
 set -euo pipefail
 
@@ -42,6 +45,12 @@ for requested_image in "${requested_images[@]}"; do
     case "${requested_image}" in
         cav_2024) build_image_from_revision cav_2024 amaya-bench:cav_2024 "${CONTAINERS_DIRECTORY}/Containerfile.cav_2024" ;;
         devel)    build_image_from_revision devel    amaya-bench:devel    "" ;;
+        cvc5)     build_image_from_revision "${CVC5_AMAYA_REVISION:-HEAD}" amaya-bench:cvc5-base ""
+                  podman build \
+                      --build-arg AMAYA_BASE_IMAGE=localhost/amaya-bench:cvc5-base \
+                      -t amaya-bench:cvc5 \
+                      -f "${CONTAINERS_DIRECTORY}/Containerfile.cvc5" \
+                      "${CONTAINERS_DIRECTORY}" ;;
         *) echo "unknown image: ${requested_image}" >&2; exit 1 ;;
     esac
 done

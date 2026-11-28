@@ -1,0 +1,22 @@
+# cvc5 1.4.2 alone vs. `amaya convert` followed by cvc5, both in the podman image
+# localhost/amaya-bench:cvc5 (benchmarks/containers/build-images.sh cvc5).
+#
+# Wrapper: benchmarks/bin/cvc5-podman-wrap.sh. The keys `time_measured_by_command` and `timeout_kill_cmd`
+# have the meaning described in benchmarks/bench/amaya-podman.yaml.
+#
+# amaya-convert-cvc5: `-O all` enables every -O preprocessing optimization, `--opt-fixpoint` runs them with
+# the fixpoint optimization pipeline (amaya/preprocessing/pipeline.py). The reported time includes the
+# conversion.
+#
+# usage (from benchmarks/bench):
+#   ./pycobench -c cvc5-podman.yaml -t 60 -j <jobs> -o <out>.tasks < inputs/<family>.inputs
+
+cvc5:
+  cmd: ../bin/cvc5-podman-wrap.sh localhost/amaya-bench:cvc5 $1
+  time_measured_by_command: true
+  timeout_kill_cmd: podman rm -f -t 0 "$PYCOBENCH_TASK_ID"
+
+amaya-convert-cvc5:
+  cmd: ../bin/cvc5-podman-wrap.sh localhost/amaya-bench:cvc5 $1 --amaya-convert -O all --opt-fixpoint
+  time_measured_by_command: true
+  timeout_kill_cmd: podman rm -f -t 0 "$PYCOBENCH_TASK_ID"
