@@ -38,6 +38,23 @@ def format_smt2_symbol(name: str) -> str:
     return f'|{name}|'
 
 
+SMT2_NUMERAL_OR_DECIMAL_PATTERN = re.compile(r'(0|[1-9][0-9]*)(\.[0-9]+)?')
+
+
+def format_smt2_attribute_value(value: str) -> str:
+    """
+    Returns a `set-info` attribute value read by `amaya/tokenize.py:tokenize` as SMT-LIB 2.6 text. The tokenizer
+    removes the quotes of string literals, so the original kind of the value is not known: a numeral, a decimal or
+    a simple symbol that is not a reserved word is written unchanged (`2.6`, `unsat`), any other value as a string
+    literal with `"` doubled (`"https://..."`).
+    """
+    if SMT2_NUMERAL_OR_DECIMAL_PATTERN.fullmatch(value):
+        return value
+    if SMT2_SIMPLE_SYMBOL_PATTERN.fullmatch(value) and value not in SMT2_RESERVED_WORDS:
+        return value
+    return '"' + value.replace('"', '""') + '"'
+
+
 def var_into_var_name(var: Var) -> str:
     return f'X{var.id}'
 
@@ -189,8 +206,8 @@ def write_ast_in_smt2(ast: ASTp_Node,
 
     for preserved_field in preserved_smtinfo:
         if preserved_field in smt_info:
-            field_value = smt_info[preserved_field]
-            preamble_lines.append(f'(set-info :{preserved_field} "{field_value}")')
+            field_value = format_smt2_attribute_value(smt_info[preserved_field])
+            preamble_lines.append(f'(set-info :{preserved_field} {field_value})')
 
     preamble = '\n'.join(preamble_lines) + '\n'
 

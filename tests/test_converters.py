@@ -1,10 +1,10 @@
 import pytest
 
 from amaya import dsl
-from amaya.converters import format_smt2_symbol, generate_optimization_problem, write_ast_in_smt2
+from amaya.converters import format_smt2_attribute_value, format_smt2_symbol, generate_optimization_problem, write_ast_in_smt2
 from amaya.preprocessing.conditional_equality_resolution import fill_referenced_vars
 from amaya.preprocessing.eval import VarInfo
-from amaya.relations_structures import AST_Quantifier, Relation, Var, VariableType
+from amaya.relations_structures import AST_Quantifier, BoolLiteral, Relation, Var, VariableType
 
 
 X, X_PRIMED, B = Var(1), Var(2), Var(3)
@@ -65,3 +65,18 @@ def test_primed_copies_do_not_reuse_names_of_existing_variables():
     assert primed_names == ['x_primed_1', 'x_primed_primed']
     all_names = [var_info.name for var_info in var_table.values()]
     assert len(all_names) == len(set(all_names))
+
+
+@pytest.mark.parametrize(('attribute_value', 'expected_text'), [
+    ('unsat', 'unsat'),
+    ('2.6', '2.6'),
+    ('https://creativecommons.org/licenses/by/4.0/', '"https://creativecommons.org/licenses/by/4.0/"'),
+    ('say "hi"', '"say ""hi"""'),
+])
+def test_attribute_value_is_symbol_numeral_or_string_literal(attribute_value, expected_text):
+    assert format_smt2_attribute_value(attribute_value) == expected_text
+
+
+def test_preserved_status_is_written_as_symbol():
+    smt2_text = write_ast_in_smt2(BoolLiteral(True), [], {}, {'status': 'unsat'})
+    assert '(set-info :status unsat)' in smt2_text
